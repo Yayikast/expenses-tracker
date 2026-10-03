@@ -1,0 +1,7 @@
+# never upload these to GitHub
+src/config.gs
+sample/
+.clasprc.json
+node_modules/
+dev/out/
+_to_delete/

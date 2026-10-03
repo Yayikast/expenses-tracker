@@ -1,0 +1,23 @@
+Scan to Pay Successful
+srsapinlapeoeden 30 Sep 2026 20:19:20
+
+SOMCHAI JAIDEE
+XXX-1-23456-X
+
+LINE MAN (QR by ttb)
+013-555-4-XXXX203-0
+
+@) « ©
+
+Amount 195.00 THB
+Fee 0.00 THB
+Reference 1 DAUGOHOHO90S701LEE80
+Reference 2 260930268536469F0340
+Ref No. 3 ZLPNE260930202967325
+Ref No.
+
+KSA0000000095 1560434
+
+Scan For
+
+Verification

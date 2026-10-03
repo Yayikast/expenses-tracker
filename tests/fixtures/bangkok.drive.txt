@@ -1,0 +1,23 @@
+Bangkok Bank
+Transaction successful
+06 Sep 26, 15:43
+Amount
+276.00 THB
+From
+น.ส. สมชาย ใจดี
+123-4-xxx567
+Bangkok Bank
+To
+ShopeePay
+Service Code:AIRPAYTH
+CUSTOMER REF
+260906027473119
+MERCHANT REF
+260906027473119
+Fee
+0.00 THB
+Bank reference no.
+470502
+Transaction reference
+2026090615434424004302908
+Scan to Verify
