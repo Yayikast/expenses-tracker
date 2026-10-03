@@ -21,21 +21,36 @@ class ApiError extends Error {
 async function api(action, ...args) {
   if (window.__mockApi) return window.__mockApi(action, ...args); // local preview only
   const s = auth.get();
-  let res;
-  try {
-    res = await fetch(CFG.API_URL, {
-      method: 'POST',
-      // text/plain keeps this a "simple" request, so Apps Script doesn't need CORS preflight
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ action, args, session: s && s.session })
-    });
-  } catch (e) {
-    throw new ApiError("Can't reach the server. Check your internet and try again.", 'NETWORK');
+  const body = JSON.stringify({ action, args, session: s && s.session });
+  let data = null, lastProblem = '';
+  // Google sometimes sends a one-off odd reply, so try twice before giving up
+  for (let attempt = 1; attempt <= 2 && !data; attempt++) {
+    let res;
+    try {
+      res = await fetch(CFG.API_URL, {
+        method: 'POST',
+        // text/plain keeps this a "simple" request, so Apps Script doesn't need CORS preflight
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body,
+        credentials: 'omit',
+        cache: 'no-store'
+      });
+    } catch (e) {
+      lastProblem = 'network';
+      if (attempt === 2) throw new ApiError("Can't reach the server. Check your internet and try again.", 'NETWORK');
+      await new Promise(r => setTimeout(r, 800));
+      continue;
+    }
+    const text = await res.text();
+    try { data = JSON.parse(text); } catch (e) {
+      const snippet = text.replace(/<style[\s\S]*?<\/style>|<script[\s\S]*?<\/script>/gi, ' ')
+        .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160);
+      lastProblem = `HTTP ${res.status}${snippet ? ': ' + snippet : ''}`;
+      console.warn('[api] unexpected reply', action, res.status, res.url, text.slice(0, 500));
+      if (attempt < 2) await new Promise(r => setTimeout(r, 800));
+    }
   }
-  let data;
-  try { data = await res.json(); } catch (e) {
-    throw new ApiError('The server sent an unexpected reply. Is the Apps Script deployed with access "Anyone"?', 'BAD_REPLY');
-  }
+  if (!data) throw new ApiError(`The server sent an unexpected reply (${lastProblem}). Tap Try again; if it keeps happening, send this message to whoever set up the app.`, 'BAD_REPLY');
   if (!data.ok) {
     if (data.code === 'AUTH' && action !== 'login') { auth.clear(); showLogin(data.error); }
     throw new ApiError(data.error || 'Something went wrong', data.code);

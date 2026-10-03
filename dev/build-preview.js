@@ -14,9 +14,9 @@ const mock = [read(...configFile.split('/')), read('src', 'parsers.gs')].map(c =
   `<script>window.__fixtures=${JSON.stringify(fixtures)}</script><script>${read('dev', 'mock.js')}</script>`;
 
 html = html
-  .replace('<link rel="stylesheet" href="styles.css">', () => `<style>${read('docs', 'styles.css')}</style>`)
-  .replace('<script src="config.js"></script>', () => mock)
-  .replace('<script src="app.js"></script>', () => `<script>${read('docs', 'app.js')}</script>`)
+  .replace('<link rel="stylesheet" href="styles.css?v=3">', () => `<style>${read('docs', 'styles.css')}</style>`)
+  .replace('<script src="config.js?v=3"></script>', () => mock)
+  .replace('<script src="app.js?v=3"></script>', () => `<script>${read('docs', 'app.js')}</script>`)
   .replace(/(src|href)="(icon[^"]*)"/g, (m, a, f) => `${a}="../../docs/${f}"`);
 if (process.argv.includes('--local-libs')) {
   html = html
