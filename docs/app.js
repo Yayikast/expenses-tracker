@@ -289,7 +289,12 @@ function categoriesOf(t) {
 }
 
 function txIcon(t) {
-  if (isFriend(t.type)) return { emoji: '🤝', color: getComputedStyle(document.documentElement).getPropertyValue(t.type.startsWith('lend') ? '--lend' : '--borrow').trim() || '#C66A00' };
+  if (isFriend(t.type)) {
+    // green: I lent, red: I borrowed, gray: a payback
+    if (t.type === 'lend_return' || t.type === 'borrow_return') return { emoji: '🤝', color: '#868E96' };
+    const v = t.type === 'lend' ? '--owed-me' : '--i-owe';
+    return { emoji: '🤝', color: getComputedStyle(document.documentElement).getPropertyValue(v).trim() || (t.type === 'lend' ? '#2B8A3E' : '#E03131') };
+  }
   if (t.type === 'transfer') return { emoji: '🔁', color: '#868E96' };
   const main = mainSplit(t);
   const c = catInfo(main ? main.category : t.category, t.type);
@@ -491,7 +496,7 @@ function renderHome() {
       ${delta}
       <div class="hero-row">
         <div><span>Income</span><b class="num t-income">${money(cur.income)}</b></div>
-        <div><span>${cur.income - cur.spent >= 0 ? 'Left over' : 'Overspent'}</span><b class="num ${cur.income - cur.spent < 0 ? 't-lend' : ''}">${money(cur.income - cur.spent)}</b></div>
+        <div><span>${cur.income - cur.spent >= 0 ? 'Left over' : 'Overspent'}</span><b class="num ${cur.income - cur.spent < 0 ? 't-over' : ''}">${money(cur.income - cur.spent)}</b></div>
       </div>
     </div>
 
@@ -615,6 +620,15 @@ function txRow(t) {
 /* =====================================================================
  * History
  * ===================================================================== */
+/* Already-sorted transactions (newest first) -> [{ date, items }], one group per day */
+function groupByDay(list) {
+  const groups = [];
+  list.forEach(t => {
+    const g = groups[groups.length - 1];
+    if (g && g.date === t.date) g.items.push(t); else groups.push({ date: t.date, items: [t] });
+  });
+  return groups;
+}
 let histLimit = 150;
 function filteredHistory() {
   const h = S.hist;
@@ -641,11 +655,7 @@ function renderHistory(keepSearchFocus) {
   const spent = list.filter(t => t.type === 'expense').reduce((s, t) => s + spentIn(t, h.cat), 0);
   const income = list.filter(t => t.type === 'income').reduce((s, t) => s + Number(t.amount), 0);
 
-  const groups = [];
-  list.slice(0, histLimit).forEach(t => {
-    const g = groups[groups.length - 1];
-    if (g && g.date === t.date) g.items.push(t); else groups.push({ date: t.date, items: [t] });
-  });
+  const groups = groupByDay(list.slice(0, histLimit));
 
   const typeChip = (v, label) => `<button class="chip ${h.type === v ? 'is-on' : ''}" data-htype="${v}">${label}</button>`;
 
@@ -707,8 +717,8 @@ function renderFriends() {
   el.innerHTML = `
     <h1 class="page-title">Friends</h1>
     <div class="balance-grid" style="margin-bottom:12px">
-      <div class="card"><span>Friends owe you</span><b class="num t-lend">${money(fb.owesYou)}</b></div>
-      <div class="card"><span>You owe friends</span><b class="num t-borrow">${money(fb.youOwe)}</b></div>
+      <div class="card"><span>Friends owe you</span><b class="num ${fb.owesYou > 0 ? 't-lend' : ''}">${money(fb.owesYou)}</b></div>
+      <div class="card"><span>You owe friends</span><b class="num ${fb.youOwe > 0 ? 't-borrow' : ''}">${money(fb.youOwe)}</b></div>
     </div>
     <button class="btn btn-primary btn-block" data-act="friend-new" style="margin-bottom:12px">+ Lend or borrow</button>
     ${open.length ? `<div class="card"><h3>Not settled</h3>${open.map(row).join('')}</div>` : ''}
@@ -737,7 +747,11 @@ function openPerson(name) {
       <div style="display:grid;gap:8px;margin-bottom:12px">${actions.join('')}
         <div class="two"><button class="btn" data-pact="lend">Lend more</button><button class="btn" data-pact="borrow">Borrow</button></div>
       </div>
-      <div class="card"><h3>History</h3><div class="tx-list">${hist.map(txRow).join('')}</div></div>`
+      <h3 class="sheet-sub">History</h3>
+      ${groupByDay(hist).map(g => `<div class="day-group">
+        <div class="day-head"><span>${dayLabel(g.date)}</span></div>
+        <div class="card"><div class="tx-list">${g.items.map(txRow).join('')}</div></div>
+      </div>`).join('')}`
   });
   sheet.body.addEventListener('click', e => {
     const b = e.target.closest('[data-pact]');

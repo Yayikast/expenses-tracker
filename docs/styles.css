@@ -12,6 +12,8 @@
   --income: #2B8A3E;
   --lend: #C66A00;
   --borrow: #6741D9;
+  --owed-me: #2B8A3E;   /* a friend owes me (I lent) */
+  --i-owe: #E03131;     /* I owe a friend (I borrowed) */
   --danger: #D6336C;
   --danger-soft: #FCE4EC;
   --warn-soft: #FFF3D6;
@@ -37,6 +39,8 @@
     --income: #51CF66;
     --lend: #FFA94D;
     --borrow: #B197FC;
+    --owed-me: #51CF66;
+    --i-owe: #FF6B6B;
     --danger: #F06595;
     --danger-soft: #3A1622;
     --warn-soft: #3A2E10;
@@ -160,9 +164,14 @@ svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width:
 .tx-title { display: block; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tx-sub { display: block; font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tx-amt { font-weight: 600; white-space: nowrap; }
-.t-income, .t-lend_return { color: var(--income); }
-.t-lend, .t-borrow_return { color: var(--lend); }
-.t-borrow { color: var(--borrow); }
+.t-income { color: var(--income); }
+.t-over { color: var(--lend); }
+/* Friends: green = they owe me, red = I owe them, gray = a payback (it settles, not a new debt) */
+.t-lend { color: var(--owed-me); }
+.t-borrow { color: var(--i-owe); }
+.t-lend_return, .t-borrow_return { color: var(--muted); }
+.person-main .t-lend { color: var(--owed-me); }
+.person-main .t-borrow { color: var(--i-owe); }
 .t-transfer { color: var(--muted); }
 
 .day-group { margin-bottom: 10px; }
@@ -183,6 +192,7 @@ svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width:
 .balance-grid .card { margin: 0; }
 .balance-grid span { font-size: 13px; color: var(--muted); display: block; }
 .balance-grid b { font-size: 22px; font-weight: 700; }
+.sheet-sub { margin: 4px 4px 0; font-size: 15px; font-weight: 600; }
 .net-card span { font-size: 13px; color: var(--muted); display: block; }
 .net-card b { font-size: 26px; font-weight: 700; display: block; }
 .net-card small { font-size: 12px; color: var(--muted); }
