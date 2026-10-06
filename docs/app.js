@@ -65,7 +65,7 @@ async function api(action, ...args) {
   }
   if (!data) throw new ApiError(`The server sent an unexpected reply (${lastProblem}). Tap Try again; if it keeps happening, send this message to whoever set up the app.`, 'BAD_REPLY');
   if (!data.ok) {
-    if (data.code === 'AUTH' && action !== 'login') { auth.clear(); showLogin(data.error); }
+    if (data.code === 'AUTH' && action !== 'login') { auth.clear(); clearCachedData(); showLogin(data.error); }
     throw new ApiError(data.error || 'Something went wrong', data.code, data.data);
   }
   return data.result;
@@ -112,6 +112,7 @@ async function finishGoogleSignIn() {
   showLogin('', true);
   try {
     const r = await api('login', { idToken: p.get('id_token'), nonce: saved.nonce });
+    clearCachedData();   // fresh sign-in: never show someone else's old data
     auth.set(r);
     return false; // continue normal start
   } catch (err) {
@@ -156,6 +157,50 @@ const store = {
   get(k, d) { try { const v = localStorage.getItem('et_' + k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
   set(k, v) { try { localStorage.setItem('et_' + k, JSON.stringify(v)); } catch (e) { /* ignore */ } }
 };
+
+/* ---------- Libraries, loaded only when needed ---------- */
+const CHART_URL = 'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js';
+const JSQR_URL = 'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js';
+const loadingScripts = {};
+function loadScript(url) {
+  if (!loadingScripts[url]) {
+    loadingScripts[url] = new Promise((resolve, reject) => {
+      const el = document.createElement('script');
+      el.src = url;
+      el.async = true;
+      el.onload = resolve;
+      el.onerror = () => { delete loadingScripts[url]; reject(new Error('Could not load ' + url)); };
+      document.head.appendChild(el);
+    });
+  }
+  return loadingScripts[url];
+}
+/** Charts draw as soon as Chart.js arrives; the rest of the screen doesn't wait for it. */
+function loadCharts() {
+  if (window.Chart) return;
+  loadScript(CHART_URL).then(() => {
+    if (S.data && S.view === 'home') { drawDonut(monthTotals(S.month)); drawBars(S.month); }
+  }).catch(() => { /* charts are optional; numbers and lists still show */ });
+}
+/** The QR reader is only needed when scanning slips. */
+const loadJsQr = () => (window.jsQR ? Promise.resolve() : loadScript(JSQR_URL));
+
+/* ---------- Local copy of your data, so the app opens instantly ---------- */
+// Shown straight away on the next open, then replaced by fresh data from Google.
+// Kept only on this device and removed when you sign out.
+const DATA_KEY = 'et_data_v1';
+let localWrites = 0;      // changes made in this session (used to avoid overwriting them with older data)
+function readCachedData() {
+  try { const d = JSON.parse(localStorage.getItem(DATA_KEY) || 'null'); return d && Array.isArray(d.transactions) ? d : null; } catch (e) { return null; }
+}
+function persistData() {
+  try { if (S.data) localStorage.setItem(DATA_KEY, JSON.stringify(S.data)); } catch (e) { /* storage full or blocked: app still works */ }
+}
+function clearCachedData() {
+  try { localStorage.removeItem(DATA_KEY); } catch (e) { /* ignore */ }
+}
+/** Call after any change you make (save, delete, settings) so the local copy stays in step. */
+function noteLocalChange() { localWrites++; persistData(); }
 
 function money(n, opts = {}) {
   const v = Math.abs(Number(n) || 0);
@@ -453,7 +498,8 @@ function cssVar(name) { return getComputedStyle(document.documentElement).getPro
 function drawDonut(cur) {
   if (S.charts.donut) { S.charts.donut.destroy(); S.charts.donut = null; }
   const canvas = $('#donut');
-  if (!canvas || !window.Chart) return;
+  if (!canvas) return;
+  if (!window.Chart) return loadCharts();
   const entries = Array.from(cur.byCat.entries()).sort((a, b) => b[1] - a[1]);
   S.charts.donut = new Chart(canvas, {
     type: 'doughnut',
@@ -475,7 +521,8 @@ function drawDonut(cur) {
 function drawBars(selected) {
   if (S.charts.bars) { S.charts.bars.destroy(); S.charts.bars = null; }
   const canvas = $('#bars');
-  if (!canvas || !window.Chart) return;
+  if (!canvas) return;
+  if (!window.Chart) return loadCharts();
   const end = selected > thisMonth() ? selected : (addMonths(selected, 3) <= thisMonth() ? addMonths(selected, 3) : thisMonth());
   const keys = Array.from({ length: 12 }, (_, i) => addMonths(end, i - 11));
   const values = keys.map(k => Math.round(monthTotals(k).spent * 100) / 100);
@@ -772,6 +819,7 @@ function openSheet({ title, count = '', body, foot = '', onClose, canDismiss }) 
 
 /* ---------- "+" menu ---------- */
 function openAddMenu() {
+  loadJsQr().catch(() => {});   // get the QR reader ready while you choose
   const sheet = openSheet({
     title: 'Add',
     body: `<div class="action-list">
@@ -1102,6 +1150,7 @@ function upsertTx(t) {
   const list = S.data.transactions;
   const i = list.findIndex(x => x.id === t.id);
   if (i >= 0) list[i] = t; else list.push(t);
+  noteLocalChange();
 }
 
 function slipFileIdOf(url) {
@@ -1117,6 +1166,7 @@ async function resyncAfterUnknownSave(slip) {
   try {
     const data = await api('getAppData');
     S.data = data;
+    persistData();
     render();
     if (slip && data.transactions.some(t => slipFileIdOf(t.slip_url) === slip.fileId)) {
       toast('That slip did get saved. It is in your list.');
@@ -1172,6 +1222,7 @@ function openDetail(id) {
     try {
       await api('deleteTransaction', t.id);
       S.data.transactions = S.data.transactions.filter(x => x.id !== t.id);
+      noteLocalChange();
       toast('Deleted');
       sheet.close();
       render();
@@ -1186,6 +1237,7 @@ function openDetail(id) {
  * Slips: pick, read QR, upload, review one by one
  * ===================================================================== */
 function pickSlips() {
+  loadJsQr().catch(() => {});
   const input = $('#slip-input');
   input.value = '';
   input.click();
@@ -1217,6 +1269,7 @@ function scanQr(img, width) {
 
 /** Shrinks the image (faster upload) and reads the slip QR code in the browser. */
 async function prepareSlip(file) {
+  await loadJsQr().catch(() => { /* no QR reader: the slip text is still read */ });
   const { img, url } = await loadImage(file);
   let qrText = scanQr(img, 1400) || scanQr(img, 800) || scanQr(img, 2000);
   const maxW = 1400;
@@ -1383,6 +1436,7 @@ async function signOut(everywhere, btn) {
   btn.disabled = true;
   try { await api(everywhere ? 'logoutAll' : 'logout'); } catch (e) { /* sign out locally anyway */ }
   auth.clear();
+  clearCachedData();
   S.data = null;
   draftSettings = null;
   showLogin(everywhere ? 'Signed out on all devices.' : 'Signed out.');
@@ -1402,7 +1456,8 @@ async function saveSettingsNow(btn) {
   btn.disabled = true; btn.textContent = 'Saving…';
   try {
     const data = await api('saveSettings', { categories: d.categories, accounts: d.accounts });
-    S.data = data;
+    S.data = { ...data, user: S.data && S.data.user };
+    noteLocalChange();
     draftSettings = null;
     toast('Settings saved');
     renderSettings();
@@ -1427,12 +1482,25 @@ async function boot() {
     if (!auth.get()) return showLogin();
   }
   hideLogin();
+
+  // Opened before on this device? Show that data right away, then refresh it.
+  const cached = window.__mockApi ? null : readCachedData();
+  if (cached) {
+    S.data = cached;
+    render();
+    refreshData();
+    return;
+  }
+
+  // First open on this device: nothing to show until Google answers.
   $('#view-home').innerHTML = `
     <div class="skeleton" style="height:44px;margin:4px 0 12px"></div>
     <div class="skeleton" style="height:180px;margin-bottom:12px"></div>
     <div class="skeleton" style="height:300px"></div>`;
+  loadCharts();   // download charts while we wait for the data
   try {
     S.data = await api('getAppData');
+    persistData();
     render();
   } catch (err) {
     if (err.code === 'AUTH') return;
@@ -1443,6 +1511,40 @@ async function boot() {
         <div class="empty-actions"><button class="btn btn-primary btn-sm" data-act="reload">Try again</button></div>
       </div>`;
   }
+}
+
+/**
+ * Gets fresh data from Google and swaps it in.
+ * If you saved/deleted something while it was loading, it asks again, so a
+ * slower, older answer never hides a change you just made.
+ */
+async function refreshData() {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const writesBefore = localWrites;
+    let fresh;
+    try {
+      fresh = await api('getAppData');
+    } catch (err) {
+      if (err.code !== 'AUTH') toast("Couldn't refresh. Showing your data from last time.");
+      return;
+    }
+    if (localWrites !== writesBefore) continue;   // something changed meanwhile: get a newer copy
+    const changed = JSON.stringify(fresh) !== JSON.stringify(S.data);
+    S.data = fresh;
+    persistData();
+    if (changed) rerenderAfterRefresh();
+    return;
+  }
+}
+
+/** Redraw with fresh data without throwing away what you're in the middle of. */
+function rerenderAfterRefresh() {
+  if (S.view === 'history' && $('#hist-q')) return renderHistory(true);   // keep search box + focus
+  if (S.view === 'settings') {
+    if (draftSettings && draftSettings.dirty) return;                       // keep unsaved settings edits
+    draftSettings = null;
+  }
+  render();
 }
 boot();
 })();

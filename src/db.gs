@@ -51,17 +51,21 @@ function toCell_(header, v) {
   return s;
 }
 
+/** Reads a whole tab in ONE call to Google Sheets (header row skipped). */
 function readTable_(key) {
-  var sh = sheet_(key);
   var headers = TABLES[key].headers;
-  var last = sh.getLastRow();
-  if (last < 2) return [];
-  var values = sh.getRange(2, 1, last - 1, headers.length).getValues();
+  var values = sheet_(key).getDataRange().getValues();
   var rows = [];
-  for (var r = 0; r < values.length; r++) {
-    if (values[r].every(function (c) { return c === '' || c === null; })) continue;
+  for (var r = 1; r < values.length; r++) {
+    var line = values[r];
+    var empty = true;
+    for (var e = 0; e < headers.length; e++) { if (line[e] !== '' && line[e] !== null && line[e] !== undefined) { empty = false; break; } }
+    if (empty) continue;
     var obj = {};
-    for (var c = 0; c < headers.length; c++) obj[headers[c]] = fromCell_(headers[c], values[r][c]);
+    for (var c = 0; c < headers.length; c++) {
+      var v = line[c] === undefined ? '' : line[c];   // tab may be narrower if the last columns are empty
+      obj[headers[c]] = fromCell_(headers[c], v);
+    }
     rows.push(obj);
   }
   return rows;

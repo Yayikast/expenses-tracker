@@ -4,7 +4,7 @@
  * (Names ending in _ are private in Apps Script.)
  */
 
-/** Everything the app needs on load, in one round trip. */
+/** Everything the app needs on load, in one round trip (4 Sheet reads). */
 function getAppData_() {
   return {
     transactions: readTable_('transactions'),
@@ -14,7 +14,7 @@ function getAppData_() {
     types: TX_TYPES,
     methods: METHODS,
     links: {
-      sheet: ss_().getUrl(),
+      sheet: 'https://docs.google.com/spreadsheets/d/' + CONFIG.SHEET_ID + '/edit',  // no extra call to Google
       folder: 'https://drive.google.com/drive/folders/' + CONFIG.SLIP_FOLDER_ID
     }
   };

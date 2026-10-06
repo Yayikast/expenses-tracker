@@ -14,10 +14,17 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icon-180.png">
+  <!-- Open connections to Google early: the data request is the slowest part of startup -->
+  <link rel="preconnect" href="https://script.google.com">
+  <link rel="preconnect" href="https://script.googleusercontent.com">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=4">
+  <!-- Font loads in the background so it never delays the first screen -->
+  <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap" onload="this.onload=null;this.rel='stylesheet'">
+  <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap"></noscript>
+  <link rel="stylesheet" href="styles.css?v=5">
+  <!-- Start downloading the chart library now, in parallel; app.js uses it when it arrives -->
+  <link rel="preload" as="script" href="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js">
 </head>
 <body>
   <div id="login" hidden></div>
@@ -56,9 +63,8 @@
   <div id="toast" role="status" aria-live="polite"></div>
   <input type="file" id="slip-input" accept="image/*" multiple hidden>
 
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
-  <script src="config.js?v=4"></script>
-  <script src="app.js?v=4"></script>
+  <!-- Chart.js and jsQR are loaded by app.js only when needed, so they don't hold up startup -->
+  <script src="config.js?v=5"></script>
+  <script src="app.js?v=5"></script>
 </body>
 </html>
