@@ -328,27 +328,47 @@ function learnLocally(t) {
   if (r) r.category = t.category; else rules.push({ pattern: t.payee, category: t.category, match: 'exact' });
 }
 
-/* Friend balances: positive owesYou = they owe you, positive youOwe = you owe them */
+/*
+ * Friend balances: ONE net number per friend, worked out from every lend/borrow record with them.
+ *   lend           I gave them money      -> they owe me more   (+)
+ *   lend_return    they paid me back      -> they owe me less   (-)
+ *   borrow         they gave me money     -> I owe them more    (-)
+ *   borrow_return  I paid them back       -> I owe them less    (+)
+ * net > 0: they owe me net.  net < 0: I owe them -net.  net = 0: settled.
+ * Each record is added exactly once, in whole satang, so 50 borrowed and 20 lent is exactly "I owe 30".
+ * The records themselves are never changed; only this summary is netted.
+ */
+const FRIEND_SIGN = { lend: 1, lend_return: -1, borrow: -1, borrow_return: 1 };
 function friendBalances() {
   const map = new Map();
   txs().forEach(t => {
-    if (!isFriend(t.type) || !t.person) return;
+    if (!FRIEND_SIGN[t.type] || !String(t.person || '').trim()) return;
     const k = norm(t.person);
-    const p = map.get(k) || { name: t.person, owesYou: 0, youOwe: 0, last: '' };
-    const a = Number(t.amount) || 0;
-    if (t.type === 'lend') p.owesYou += a;
-    if (t.type === 'lend_return') p.owesYou -= a;
-    if (t.type === 'borrow') p.youOwe += a;
-    if (t.type === 'borrow_return') p.youOwe -= a;
-    if (t.date > p.last) p.last = t.date;
+    const p = map.get(k) || { name: String(t.person).trim(), net: 0, last: '' };
+    p.net += FRIEND_SIGN[t.type] * Math.round((Number(t.amount) || 0) * 100);
+    if (String(t.date || '') > p.last) p.last = String(t.date);
     map.set(k, p);
   });
-  const list = Array.from(map.values()).map(p => ({ ...p, owesYou: Math.round(p.owesYou * 100) / 100, youOwe: Math.round(p.youOwe * 100) / 100 }));
+  const list = Array.from(map.values()).map(p => {
+    const net = p.net / 100;
+    return {
+      name: p.name, last: p.last, net,
+      status: net > 0 ? 'owes_you' : net < 0 ? 'you_owe' : 'settled',
+      owesYou: Math.max(0, net),       // what they still owe me (0 if not)
+      youOwe: Math.max(0, -net)        // what I still owe them (0 if not)
+    };
+  });
+  const sum = key => Math.round(list.reduce((s, p) => s + p[key] * 100, 0)) / 100;
   return {
     list: list.sort((a, b) => b.last.localeCompare(a.last)),
-    owesYou: list.reduce((s, p) => s + Math.max(0, p.owesYou), 0),
-    youOwe: list.reduce((s, p) => s + Math.max(0, p.youOwe), 0)
+    owesYou: sum('owesYou'),   // total of friends whose net balance says they owe me
+    youOwe: sum('youOwe')      // total of friends whose net balance says I owe them
   };
+}
+function friendStatusText(p) {
+  if (p.status === 'owes_you') return `<span class="t-lend">Owes you ${money(p.owesYou)}</span>`;
+  if (p.status === 'you_owe') return `<span class="t-borrow">You owe ${money(p.youOwe)}</span>`;
+  return `<span>Settled — ${money(0)}</span>`;
 }
 
 /* ---------- Toast ---------- */
@@ -673,18 +693,13 @@ function renderHistory(keepSearchFocus) {
 function renderFriends() {
   const el = $('#view-friends');
   const fb = friendBalances();
-  const open = fb.list.filter(p => p.owesYou !== 0 || p.youOwe !== 0);
-  const settled = fb.list.filter(p => p.owesYou === 0 && p.youOwe === 0);
+  const open = fb.list.filter(p => p.status !== 'settled');
+  const settled = fb.list.filter(p => p.status === 'settled');
 
   const row = p => {
-    const parts = [];
-    if (p.owesYou > 0) parts.push(`<span class="t-lend">owes you ${money(p.owesYou)}</span>`);
-    if (p.owesYou < 0) parts.push(`<span>paid you ${money(p.owesYou)} extra</span>`);
-    if (p.youOwe > 0) parts.push(`<span class="t-borrow">you owe ${money(p.youOwe)}</span>`);
-    if (p.youOwe < 0) parts.push(`<span>you paid ${money(p.youOwe)} extra</span>`);
     return `<button class="person" data-person="${esc(p.name)}">
       <span class="avatar">${esc(p.name.trim().charAt(0).toUpperCase())}</span>
-      <span class="person-main"><b>${esc(p.name)}</b><span>${parts.join(' · ') || 'All settled'}</span></span>
+      <span class="person-main"><b>${esc(p.name)}</b>${friendStatusText(p)}</span>
       <svg class="chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg>
     </button>`;
   };
@@ -706,15 +721,18 @@ function openPerson(name) {
   const p = friendBalances().list.find(x => norm(x.name) === norm(name));
   if (!p) return;
   const hist = sortTx(txs().filter(t => isFriend(t.type) && norm(t.person) === norm(name)));
+  // Only the action that settles the NET balance is offered, filled in with exactly that amount
   const actions = [];
-  if (p.owesYou > 0) actions.push(`<button class="btn btn-primary btn-block" data-pact="lend_return">They paid back ${money(p.owesYou)}</button>`);
-  if (p.youOwe > 0) actions.push(`<button class="btn btn-primary btn-block" data-pact="borrow_return">I paid back ${money(p.youOwe)}</button>`);
+  if (p.status === 'owes_you') actions.push(`<button class="btn btn-primary btn-block" data-pact="lend_return">They paid back ${money(p.owesYou)}</button>`);
+  if (p.status === 'you_owe') actions.push(`<button class="btn btn-primary btn-block" data-pact="borrow_return">I paid back ${money(p.youOwe)}</button>`);
+  const netLabel = p.status === 'owes_you' ? `${esc(p.name)} owes you` : p.status === 'you_owe' ? `You owe ${esc(p.name)}` : 'Settled';
+  const netClass = p.status === 'owes_you' ? 't-lend' : p.status === 'you_owe' ? 't-borrow' : '';
   const sheet = openSheet({
     title: p.name,
     body: `
-      <div class="balance-grid" style="margin-bottom:12px">
-        <div class="card"><span>Owes you</span><b class="num t-lend">${money(Math.max(0, p.owesYou))}</b></div>
-        <div class="card"><span>You owe</span><b class="num t-borrow">${money(Math.max(0, p.youOwe))}</b></div>
+      <div class="card net-card" style="margin-bottom:12px">
+        <span>${netLabel}</span><b class="num ${netClass}">${money(p.status === 'owes_you' ? p.owesYou : p.youOwe)}</b>
+        <small>Balance after all lending and borrowing with ${esc(p.name)}</small>
       </div>
       <div style="display:grid;gap:8px;margin-bottom:12px">${actions.join('')}
         <div class="two"><button class="btn" data-pact="lend">Lend more</button><button class="btn" data-pact="borrow">Borrow</button></div>

@@ -183,6 +183,9 @@ svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width:
 .balance-grid .card { margin: 0; }
 .balance-grid span { font-size: 13px; color: var(--muted); display: block; }
 .balance-grid b { font-size: 22px; font-weight: 700; }
+.net-card span { font-size: 13px; color: var(--muted); display: block; }
+.net-card b { font-size: 26px; font-weight: 700; display: block; }
+.net-card small { font-size: 12px; color: var(--muted); }
 .person { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 2px; text-align: left; border-top: 1px solid var(--line); }
 .person:first-child { border-top: 0; }
 .avatar { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; font-weight: 600; background: var(--accent-soft); color: var(--accent); flex: none; }

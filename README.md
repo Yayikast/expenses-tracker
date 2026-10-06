@@ -84,7 +84,7 @@ On GitHub: repo **Settings → Pages → Build and deployment**: Source **Deploy
 | **Split a bill** | On any expense, tap more than one category. Each one gets its own amount box, with the remaining amount shown underneath. Save unlocks once the parts add up exactly to the total. Tap a category again to remove it. |
 | **+ → Lend or borrow** | "I lent", "They paid back", "I borrowed", "I paid back" |
 | **History** | Search, filter by month / category / type, then tap an item to view the slip, edit or delete it |
-| **Friends** | Who owes you and who you owe. Tap a friend, then **They paid back** to fill in the return for you |
+| **Friends** | One balance per friend, netted: if you borrowed ฿50 from Matt and he borrowed ฿20 from you, it shows **You owe ฿30**; equal amounts show **Settled — ฿0**. Tap a friend to see every original lend/borrow record, then **They paid back** or **I paid back** to fill in the remaining amount for you |
 | **Settings** | Rename or hide categories, set monthly budgets, manage accounts, links to your Sheet and slips folder, sign out (this device or all devices) |
 
 **Category guessing:** every time you save a payee with a category, the app remembers it (`PayeeRules` tab), so the next slip from the same shop is categorised automatically.
