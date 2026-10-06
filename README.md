@@ -81,6 +81,7 @@ On GitHub: repo **Settings → Pages → Build and deployment**: Source **Deploy
 | **Home** | Month picker, total spent / income / left over, change vs last month, spending by category (with budget bars), spending per month chart (tap a bar to jump to that month), recent items |
 | **+ → Scan slips** | Pick one or more slips. Each one is read, then shown on a review card. Check it and tap **Save & next**, or **Skip** |
 | **+ → Add manually** | For cash, income or anything without a slip |
+| **Split a bill** | On any expense, tap more than one category. Each one gets its own amount box, with the remaining amount shown underneath. Save unlocks once the parts add up exactly to the total. Tap a category again to remove it. |
 | **+ → Lend or borrow** | "I lent", "They paid back", "I borrowed", "I paid back" |
 | **History** | Search, filter by month / category / type, then tap an item to view the slip, edit or delete it |
 | **Friends** | Who owes you and who you owe. Tap a friend, then **They paid back** to fill in the return for you |
@@ -98,11 +99,13 @@ On GitHub: repo **Settings → Pages → Build and deployment**: Source **Deploy
 
 | Tab | Holds |
 |---|---|
-| `Transactions` | One row per transaction: id, date, time, type, amount, category, payee, person, note, method, account, source, slip_ref, slip_url, created_at, updated_at |
+| `Transactions` | One row per transaction: id, date, time, type, amount, category, payee, person, note, method, account, source, slip_ref, slip_url, created_at, updated_at, splits |
 | `Categories` | name, type (expense / income), emoji, color, monthly budget, order, archived |
 | `Accounts` | name, kind, usual payment method, order, archived |
 | `PayeeRules` | payee → category (`exact` ones are learned automatically, `contains` ones are starter rules you can edit) |
 | `Summary` | Spending per month by category, made with a formula. Look but don't edit |
+
+**Split bills** stay one row: `amount` is the total, `category` says `Split`, and `splits` lists the parts, e.g. `Food: 300 | Drink: 50 | Entertainment: 50`. The parts must add up to the amount. The app's dashboard and budgets count each part in its own category, while the Sheet's `Summary` tab shows split bills under "Split".
 
 You can edit the Sheet by hand, but keep the header row as it is and leave the `id` column alone. Types are `expense`, `income`, `transfer`, `lend`, `lend_return`, `borrow`, `borrow_return`.
 

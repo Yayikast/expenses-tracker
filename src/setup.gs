@@ -40,6 +40,8 @@ function ensureTab_(key) {
   var first = sh.getRange(1, 1, 1, t.headers.length).getValues()[0];
   if (first.join('') === '') {
     sh.getRange(1, 1, 1, t.headers.length).setValues([t.headers]);
+  } else {
+    ensureHeaders_(key);   // newer columns (e.g. splits) added to an existing tab
   }
   sh.getRange(1, 1, 1, t.headers.length)
     .setFontWeight('bold').setBackground('#F1F3F5').setFontColor('#212529');
@@ -55,7 +57,7 @@ function formatTransactions_() {
   sh.getRange(2, 1, rows, h.length).setNumberFormat('@');
   sh.getRange(2, h.indexOf('date') + 1, rows, 1).setNumberFormat('yyyy-mm-dd');
   sh.getRange(2, h.indexOf('amount') + 1, rows, 1).setNumberFormat('#,##0.00');
-  var widths = [120, 95, 60, 100, 90, 110, 200, 110, 220, 90, 110, 70, 220, 200, 150, 150];
+  var widths = [120, 95, 60, 100, 90, 110, 200, 110, 220, 90, 110, 70, 220, 200, 150, 150, 300];
   widths.forEach(function (w, i) { sh.setColumnWidth(i + 1, w); });
 }
 

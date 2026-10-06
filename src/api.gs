@@ -43,6 +43,7 @@ function saveTransaction_(input) {
       }
     }
 
+    if (tx.splits.length) ensureHeaders_('transactions');
     var row = tx.id ? findRowById_('transactions', tx.id) : -1;
     if (tx.id && row < 0) throw new Error('This transaction no longer exists. It may have been deleted.');
     var existing = row > 0 ? readRecordAt_('transactions', row) : null;
@@ -67,7 +68,7 @@ function saveTransaction_(input) {
     }
     rememberSave_(requestId, tx.id);
 
-    if (tx.payee && tx.category && (tx.type === 'expense' || tx.type === 'income')) {
+    if (tx.payee && tx.category && !tx.splits.length && (tx.type === 'expense' || tx.type === 'income')) {
       learnPayee_(tx.payee, tx.category);
     }
     return tx;
@@ -174,6 +175,14 @@ function cleanTransaction_(input) {
   if ((type === 'expense' || type === 'income') && !category) category = 'Other';
   if (type !== 'expense' && type !== 'income') category = '';
 
+  // Split across several categories (expenses only). One part = a normal transaction.
+  var splits = cleanSplits_(input.splits, amount);
+  if (splits.length === 1) { category = splits[0].category; splits = []; }
+  if (splits.length) {
+    if (type !== 'expense') throw new Error('Only expenses can be split across categories.');
+    category = 'Split';
+  }
+
   return {
     id: str(input.id, 40),
     date: date,
@@ -190,8 +199,37 @@ function cleanTransaction_(input) {
     slip_ref: str(input.slip_ref, 80),
     slip_url: '',
     created_at: '',
-    updated_at: ''
+    updated_at: '',
+    splits: splits
   };
+}
+
+/**
+ * Checks the category parts of a split bill:
+ * every part has a category and an amount above 0, no category twice,
+ * and the parts add up EXACTLY to the total (compared in satang, so no rounding slips through).
+ */
+function cleanSplits_(raw, total) {
+  if (!raw || !raw.length) return [];
+  if (!Array.isArray(raw)) throw new Error('Category split is not in the right format.');
+  if (raw.length > MAX_SPLITS) throw new Error('A bill can be split into at most ' + MAX_SPLITS + ' categories.');
+  var seen = {};
+  var sum = 0;
+  var parts = raw.map(function (p) {
+    var category = String(p && p.category || '').trim().slice(0, 60);
+    var amount = Math.round(Number(p && p.amount) * 100) / 100;
+    if (!category) throw new Error('Pick a category for every part of the split.');
+    if (!(amount > 0)) throw new Error('Enter an amount above 0 for ' + category + '.');
+    var key = category.toLowerCase();
+    if (seen[key]) throw new Error(category + ' is in the split twice.');
+    seen[key] = true;
+    sum += Math.round(amount * 100);
+    return { category: category, amount: amount };
+  });
+  if (parts.length > 1 && sum !== Math.round(total * 100)) {
+    throw new Error('The category amounts add up to ฿' + (sum / 100).toFixed(2) + ' but the total is ฿' + total.toFixed(2) + '.');
+  }
+  return parts;
 }
 
 /**
@@ -275,6 +313,23 @@ function renameCategories_(renames) {
     });
   }
   if (changed) catRange.setValues(cats);
+
+  // ...and inside split bills
+  var splitCol = TABLES.transactions.headers.indexOf('splits') + 1;
+  if (sh.getLastColumn() >= splitCol) {
+    var splitRange = sh.getRange(2, splitCol, last - 1, 1);
+    var splitVals = splitRange.getValues();
+    var splitChanged = false;
+    for (var k = 0; k < splitVals.length; k++) {
+      if (!splitVals[k][0]) continue;
+      var parts = parseSplits_(splitVals[k][0]);
+      parts.forEach(function (p) {
+        renames.forEach(function (r) { if (r.type !== 'income' && p.category === r.originalName) { p.category = r.name; splitChanged = true; } });
+      });
+      splitVals[k][0] = formatSplits_(parts);
+    }
+    if (splitChanged) splitRange.setValues(splitVals);
+  }
 
   // keep learned rules pointing at the new name
   var rsh = sheet_('rules');

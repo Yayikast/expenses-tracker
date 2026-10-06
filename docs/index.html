@@ -22,7 +22,7 @@
   <!-- Font loads in the background so it never delays the first screen -->
   <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap" onload="this.onload=null;this.rel='stylesheet'">
   <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap"></noscript>
-  <link rel="stylesheet" href="styles.css?v=5">
+  <link rel="stylesheet" href="styles.css?v=6">
   <!-- Start downloading the chart library now, in parallel; app.js uses it when it arrives -->
   <link rel="preload" as="script" href="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js">
 </head>
@@ -64,7 +64,7 @@
   <input type="file" id="slip-input" accept="image/*" multiple hidden>
 
   <!-- Chart.js and jsQR are loaded by app.js only when needed, so they don't hold up startup -->
-  <script src="config.js?v=5"></script>
-  <script src="app.js?v=5"></script>
+  <script src="config.js?v=6"></script>
+  <script src="app.js?v=6"></script>
 </body>
 </html>

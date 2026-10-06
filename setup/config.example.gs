@@ -21,7 +21,7 @@ var TABLES = {
   transactions: {
     name: 'Transactions',
     headers: ['id', 'date', 'time', 'type', 'amount', 'category', 'payee', 'person', 'note',
-      'method', 'account', 'source', 'slip_ref', 'slip_url', 'created_at', 'updated_at']
+      'method', 'account', 'source', 'slip_ref', 'slip_url', 'created_at', 'updated_at', 'splits']
   },
   categories: {
     name: 'Categories',
@@ -45,6 +45,7 @@ var TABLES = {
  */
 var TX_TYPES = ['expense', 'income', 'transfer', 'lend', 'lend_return', 'borrow', 'borrow_return'];
 var FRIEND_TYPES = ['lend', 'lend_return', 'borrow', 'borrow_return'];
+var MAX_SPLITS = 10;   // most categories one bill can be split into
 var METHODS = ['PromptPay', 'Transfer', 'Cash', 'Card', 'Wallet'];
 
 var DEFAULT_CATEGORIES = [

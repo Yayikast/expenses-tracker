@@ -31,6 +31,7 @@ function fromCell_(header, v) {
     return v === '' || v === null ? '' : Number(v);
   }
   if (header === 'archived') return v === true || String(v).toUpperCase() === 'TRUE';
+  if (header === 'splits') return parseSplits_(v);
   return v === null || v === undefined ? '' : String(v);
 }
 
@@ -45,6 +46,7 @@ function toCell_(header, v) {
     return v === '' ? '' : Number(v);
   }
   if (header === 'archived') return v === true;
+  if (header === 'splits') return formatSplits_(v);
   var s = String(v);
   // Stop text like "=..." being treated as a formula
   if (/^[=+\-@]/.test(s)) s = "'" + s;
@@ -69,6 +71,30 @@ function readTable_(key) {
     rows.push(obj);
   }
   return rows;
+}
+
+/**
+ * A split bill keeps its parts in one readable cell, e.g. "Food: 300 | Drink: 50 | Entertainment: 50".
+ * Empty for normal single-category transactions.
+ */
+function parseSplits_(v) {
+  var text = String(v === null || v === undefined ? '' : v).trim();
+  if (!text) return [];
+  return text.split('|').map(function (part) {
+    var i = part.lastIndexOf(':');
+    if (i < 0) return null;
+    var amount = Number(part.substr(i + 1).replace(/[,\s฿]/g, ''));
+    var category = part.substr(0, i).trim();
+    return category && amount > 0 ? { category: category, amount: Math.round(amount * 100) / 100 } : null;
+  }).filter(Boolean);
+}
+
+function formatSplits_(splits) {
+  if (!splits || !splits.length) return '';
+  return splits.map(function (s) {
+    var a = Number(s.amount);
+    return String(s.category).replace(/[|:]/g, ' ').trim() + ': ' + (a % 1 ? a.toFixed(2) : String(a));
+  }).join(' | ');
 }
 
 function rowFromObject_(key, obj) {
@@ -132,6 +158,17 @@ function replaceTable_(key, objects) {
     range.setNumberFormats(objects.map(function () { return f; }));
     range.setValues(objects.map(function (o) { return rowFromObject_(key, o); }));
   }
+}
+
+/** Adds any header cells missing from row 1 (new columns added in an update). Never moves data. */
+function ensureHeaders_(key) {
+  var sh = sheet_(key);
+  var headers = TABLES[key].headers;
+  var row = sh.getRange(1, 1, 1, headers.length);
+  var current = row.getValues()[0];
+  var missing = false;
+  for (var i = 0; i < headers.length; i++) if (current[i] === '' || current[i] === null) { current[i] = headers[i]; missing = true; }
+  if (missing) row.setValues([current]).setFontWeight('bold').setBackground('#F1F3F5').setFontColor('#212529');
 }
 
 function withLock_(fn) {

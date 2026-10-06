@@ -55,6 +55,14 @@
         const ex = db.transactions.find(x => usable(x.slip_ref) && same(x.slip_ref, t.slip_ref));
         if (ex) { const e = new Error('This slip is already saved (' + ex.date + ', ฿' + ex.amount + ').'); e.code = 'DUPLICATE'; e.data = JSON.parse(JSON.stringify(ex)); throw e; }
       }
+      // split bills: same rules as the server
+      const parts = Array.isArray(t.splits) ? t.splits : [];
+      if (parts.length === 1) { t.category = parts[0].category; t.splits = []; }
+      if (parts.length > 1) {
+        const sum = parts.reduce((a, p) => a + Math.round(p.amount * 100), 0);
+        if (sum !== Math.round(t.amount * 100)) throw new Error('The category amounts add up to ฿' + (sum / 100).toFixed(2) + ' but the total is ฿' + Number(t.amount).toFixed(2) + '.');
+        t.category = 'Split';
+      } else t.splits = [];
       if (!t.id) t.id = 't_new' + (++n);
       t.slip_url = t.slipFileId ? 'https://drive.google.com/file/d/' + t.slipFileId + 'xxxxxxxxxxxxxxxxxxxx/view' : (db.transactions.find(x => x.id === t.id) || {}).slip_url || '';
       t._req = t.requestId;

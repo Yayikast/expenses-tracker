@@ -266,10 +266,33 @@ function catInfo(name, type) {
 function activeAccounts() {
   return (S.data.accounts || []).filter(a => !a.archived).sort((a, b) => (a.order || 0) - (b.order || 0));
 }
+/** The parts of a split bill, or null for a normal one-category transaction. */
+function splitsOf(t) {
+  return t && Array.isArray(t.splits) && t.splits.length > 1 ? t.splits : null;
+}
+/** Biggest part first: decides the icon and the "Food + 2 more" label. */
+function mainSplit(t) {
+  const parts = splitsOf(t);
+  return parts ? parts.reduce((a, b) => (Number(b.amount) > Number(a.amount) ? b : a)) : null;
+}
+/** How much of a transaction counts as spending in one category (the whole amount if no category is given). */
+function spentIn(t, cat) {
+  const parts = splitsOf(t);
+  if (!cat || !parts) return Number(t.amount) || 0;
+  const p = parts.find(x => x.category === cat);
+  return p ? Number(p.amount) || 0 : 0;
+}
+/** All categories a transaction belongs to. */
+function categoriesOf(t) {
+  const parts = splitsOf(t);
+  return parts ? parts.map(p => p.category) : (t.category ? [t.category] : []);
+}
+
 function txIcon(t) {
   if (isFriend(t.type)) return { emoji: '🤝', color: getComputedStyle(document.documentElement).getPropertyValue(t.type.startsWith('lend') ? '--lend' : '--borrow').trim() || '#C66A00' };
   if (t.type === 'transfer') return { emoji: '🔁', color: '#868E96' };
-  const c = catInfo(t.category, t.type);
+  const main = mainSplit(t);
+  const c = catInfo(main ? main.category : t.category, t.type);
   return { emoji: c.emoji || '📦', color: c.color || '#868E96' };
 }
 function txTitle(t) {
@@ -299,7 +322,7 @@ function guessCategory(payee) {
   return r ? r.category : '';
 }
 function learnLocally(t) {
-  if (!t.payee || !t.category || !['expense', 'income'].includes(t.type)) return;
+  if (!t.payee || !t.category || splitsOf(t) || !['expense', 'income'].includes(t.type)) return;
   const rules = S.data.rules || (S.data.rules = []);
   const r = rules.find(r => r.match === 'exact' && norm(r.pattern) === norm(t.payee));
   if (r) r.category = t.category; else rules.push({ pattern: t.payee, category: t.category, match: 'exact' });
@@ -364,7 +387,9 @@ function monthTotals(key) {
     const a = Number(t.amount) || 0;
     if (t.type === 'expense') {
       spent += a;
-      byCat.set(t.category || 'Other', (byCat.get(t.category || 'Other') || 0) + a);
+      const parts = splitsOf(t);
+      if (parts) parts.forEach(p => byCat.set(p.category, (byCat.get(p.category) || 0) + (Number(p.amount) || 0)));
+      else byCat.set(t.category || 'Other', (byCat.get(t.category || 'Other') || 0) + a);
     } else if (t.type === 'income') income += a;
   });
   return { spent, income, byCat };
@@ -553,7 +578,8 @@ function drawBars(selected) {
 function txRow(t) {
   const ic = txIcon(t);
   const sub = [
-    isFriend(t.type) ? (t.payee || TYPE[t.type].short) : (t.type === 'transfer' ? 'Transfer' : t.category),
+    isFriend(t.type) ? (t.payee || TYPE[t.type].short) : (t.type === 'transfer' ? 'Transfer'
+      : splitsOf(t) ? `${mainSplit(t).category} + ${splitsOf(t).length - 1} more` : t.category),
     t.account, t.time
   ].filter(Boolean).join(' · ');
   return `<button class="tx" data-tx="${esc(t.id)}">
@@ -576,9 +602,9 @@ function filteredHistory() {
   return sortTx(txs().filter(t => {
     if (h.month !== 'all' && monthOf(t.date) !== h.month) return false;
     if (h.type !== 'all' && groupOf(t.type) !== h.type) return false;
-    if (h.cat && t.category !== h.cat) return false;
+    if (h.cat && !categoriesOf(t).includes(h.cat)) return false;
     if (q) {
-      const hay = norm([t.payee, t.person, t.note, t.category, t.account, t.amount, t.date].join(' '));
+      const hay = norm([t.payee, t.person, t.note, categoriesOf(t).join(' '), t.account, t.amount, t.date].join(' '));
       if (!hay.includes(q)) return false;
     }
     return true;
@@ -589,9 +615,10 @@ function renderHistory(keepSearchFocus) {
   const el = $('#view-history');
   const h = S.hist;
   const months = Array.from(new Set(txs().map(t => monthOf(t.date)))).sort().reverse();
-  const cats = Array.from(new Set(txs().filter(t => t.category).map(t => t.category))).sort();
+  const cats = Array.from(new Set(txs().flatMap(categoriesOf).filter(c => c && c !== 'Split'))).sort();
   const list = filteredHistory();
-  const spent = list.filter(t => t.type === 'expense').reduce((s, t) => s + Number(t.amount), 0);
+  // With a category filter, a split bill only counts its part in that category
+  const spent = list.filter(t => t.type === 'expense').reduce((s, t) => s + spentIn(t, h.cat), 0);
   const income = list.filter(t => t.type === 'income').reduce((s, t) => s + Number(t.amount), 0);
 
   const groups = [];
@@ -630,7 +657,7 @@ function renderHistory(keepSearchFocus) {
   $('#hist-results').innerHTML = list.length ? `
     <div class="hist-total"><span>${list.length} item${list.length === 1 ? '' : 's'}</span><span>${spent ? 'Spent ' + money(spent) : ''}${spent && income ? ' · ' : ''}${income ? 'In ' + money(income) : ''}</span></div>
     ${groups.map(g => {
-      const daySpent = g.items.filter(t => t.type === 'expense').reduce((s, t) => s + Number(t.amount), 0);
+      const daySpent = g.items.filter(t => t.type === 'expense').reduce((s, t) => s + spentIn(t, h.cat), 0);
       return `<div class="day-group">
         <div class="day-head"><span>${dayLabel(g.date)}</span><span class="num">${daySpent ? money(daySpent) : ''}</span></div>
         <div class="card"><div class="tx-list">${g.items.map(txRow).join('')}</div></div>
@@ -850,6 +877,7 @@ function openEditor(initial = {}, opts = {}) {
   return new Promise(resolve => {
     const isEdit = !!initial.id;
     const slip = opts.slip || null;
+    const initialSplits = splitsOf(initial);
     const accounts = activeAccounts();
     const lastAcc = store.get('lastAccount', '');
     const defaultAcc = initial.account || (accounts.find(a => a.name === lastAcc) || accounts[0] || {}).name || '';
@@ -857,7 +885,9 @@ function openEditor(initial = {}, opts = {}) {
       id: initial.id || '',
       type: initial.type || 'expense',
       amount: initial.amount === undefined || initial.amount === null ? '' : initial.amount,
-      category: initial.category || '',
+      // Picked categories. One = normal transaction. Two or more = split bill (expenses only).
+      cats: initialSplits ? initialSplits.map(p => p.category) : (initial.category && initial.category !== 'Split' ? [initial.category] : []),
+      splitAmt: initialSplits ? Object.fromEntries(initialSplits.map(p => [p.category, String(p.amount)])) : {},
       payee: initial.payee || '',
       person: initial.person || '',
       note: initial.note || '',
@@ -866,9 +896,11 @@ function openEditor(initial = {}, opts = {}) {
       account: defaultAcc,
       method: initial.method || ((accounts.find(a => a.name === defaultAcc) || {}).default_method) || 'PromptPay',
       slip_ref: initial.slip_ref || '',
-      catTouched: !!initial.category && isEdit
+      // A category the app filled in for you (slip/shop guess). Tapping another one replaces it instead of splitting.
+      catGuessed: false
     };
-    if (!f.category && f.payee) f.category = guessCategory(f.payee);
+    if (!isEdit && f.cats.length === 1) f.catGuessed = true;
+    if (!f.cats.length && f.payee) { const g = guessCategory(f.payee); if (g) { f.cats = [g]; f.catGuessed = true; } }
     let result = 'cancel';
     let saving = false;
     let allowDuplicate = false;
@@ -935,10 +967,9 @@ function openEditor(initial = {}, opts = {}) {
       const grp = groupOf(f.type);
       const ppl = people();
       const cats = grp === 'expense' || grp === 'income' ? activeCats(grp) : [];
-      if (f.category && cats.length && !cats.some(c => c.name === f.category)) {
-        const old = catInfo(f.category, grp);
-        cats.push({ ...old, name: f.category });
-      }
+      f.cats.forEach(name => {   // hidden/old categories still show if this transaction uses them
+        if (cats.length && !cats.some(c => c.name === name)) cats.push({ ...catInfo(name, grp), name });
+      });
       const payeeLabel = grp === 'income' ? 'From' : grp === 'transfer' ? 'To which account / note' : grp === 'friend' ? 'Shop or reason (optional)' : 'Paid to';
       return `
         ${grp === 'friend' ? `
@@ -949,10 +980,11 @@ function openEditor(initial = {}, opts = {}) {
           </div>` : ''}
         ${cats.length ? `
           <div class="field">
-            <span class="label">Category</span>
+            <span class="label">Category${grp === 'expense' ? ' <span class="label-hint">tap more than one to split the bill</span>' : ''}</span>
             <div class="cat-grid">${cats.map(c => `
-              <button type="button" class="cat-pick ${f.category === c.name ? 'is-on' : ''}" data-cat-pick="${esc(c.name)}"><span class="e">${esc(c.emoji || '📦')}</span>${esc(c.name)}</button>`).join('')}
+              <button type="button" class="cat-pick ${f.cats.includes(c.name) ? 'is-on' : ''}" data-cat-pick="${esc(c.name)}"><span class="e">${esc(c.emoji || '📦')}</span>${esc(c.name)}</button>`).join('')}
             </div>
+            <div id="ed-split">${splitSection()}</div>
           </div>` : ''}
         <div class="field">
           <label for="f-payee">${payeeLabel}</label>
@@ -981,6 +1013,82 @@ function openEditor(initial = {}, opts = {}) {
         <datalist id="dl-payees">${payees().map(p => `<option value="${esc(p)}">`).join('')}</datalist>`;
     }
 
+    /* ----- Split bill: amounts per category, only when 2+ categories are picked ----- */
+    const isSplit = () => groupOf(f.type) === 'expense' && f.cats.length >= 2;
+    // Money as whole satang, so 60.10 + 36.10 is exactly 96.20 (no floating-point surprises)
+    const toSatang = v => {
+      const t = String(v === undefined || v === null ? '' : v).replace(/,/g, '').trim();
+      if (!t) return null;
+      const n = Number(t);
+      return isFinite(n) ? Math.round(n * 100) : null;
+    };
+    function splitState() {
+      const total = toSatang(f.amount) || 0;
+      let sum = 0, empty = [], bad = 0;
+      f.cats.forEach(c => { const a = toSatang(f.splitAmt[c]); if (a === null) empty.push(c); else if (a <= 0) bad++; else sum += a; });
+      return { total, sum, remaining: total - sum, empty, bad };
+    }
+    /** Why Save is locked for a split bill ('' = OK to save). */
+    function splitBlockReason() {
+      if (!isSplit()) return '';
+      const st = splitState();
+      if (!(st.total > 0)) return 'Enter the total first';
+      if (st.remaining > 0) return `Assign ${money(st.remaining / 100)} more`;
+      if (st.remaining < 0) return `Over by ${money(-st.remaining / 100)}`;
+      if (st.empty.length || st.bad) return 'Fill in every amount';
+      return '';
+    }
+    function remainingHtml(st) {
+      const pct = st.total > 0 ? Math.min(100, Math.max(0, st.sum / st.total * 100)) : 0;
+      let cls = 'warn', text = `Remaining <b class="num">${money(st.remaining / 100)}</b>`;
+      if (st.remaining === 0 && !st.empty.length && !st.bad && st.total > 0) { cls = 'ok'; text = 'All assigned ✓'; }
+      else if (st.remaining === 0 && st.total > 0) text = 'Remaining <b class="num">฿0</b> · fill in or untap the empty ones';
+      else if (st.remaining < 0) { cls = 'bad'; text = `Over by <b class="num">${money(-st.remaining / 100)}</b>`; }
+      return `<div class="split-bar"><i class="${cls}" style="width:${pct}%"></i></div><div class="split-rem ${cls}">${text}</div>`;
+    }
+    function splitSection() {
+      if (!isSplit()) return '';
+      return `<div class="split-box">
+        ${f.cats.map(c => {
+          const ci = catInfo(c, 'expense');
+          return `<div class="split-row">
+            <span class="split-cat"><span class="e">${esc(ci.emoji || '📦')}</span><span class="n">${esc(c)}</span></span>
+            <button type="button" class="btn btn-sm split-use" data-split-use="${esc(c)}" hidden></button>
+            <span class="split-amt"><span class="cur">฿</span><input class="input num" inputmode="decimal" data-split-amt="${esc(c)}" value="${esc(f.splitAmt[c] || '')}" placeholder="0" autocomplete="off" aria-label="Amount for ${esc(c)}"></span>
+          </div>`;
+        }).join('')}
+        <div id="split-remaining"></div>
+      </div>`;
+    }
+    /** Refresh the remaining line, the one-tap "Use ฿X" button and Save, without redrawing the inputs you're typing in. */
+    function updateSplitUI() {
+      if (isSplit()) {
+        const st = splitState();
+        const rem = $('#split-remaining', sheet.body);
+        if (rem) rem.innerHTML = remainingHtml(st);
+        $$('[data-split-use]', sheet.body).forEach(b => {
+          const show = st.remaining > 0 && st.empty.length === 1 && st.empty[0] === b.dataset.splitUse;
+          b.hidden = !show;
+          if (show) b.textContent = `Use ${money(st.remaining / 100)}`;
+        });
+      }
+      updateSaveButton();
+    }
+    function refreshCats() {
+      $$('[data-cat-pick]', sheet.body).forEach(b => b.classList.toggle('is-on', f.cats.includes(b.dataset.catPick)));
+      const box = $('#ed-split', sheet.body);
+      if (box) box.innerHTML = splitSection();
+      updateSplitUI();
+    }
+    /** Save stays locked (and says why) until a split adds up exactly. */
+    function updateSaveButton() {
+      const save = $('[data-save]', sheet.foot);
+      if (!save || saving) return;
+      const reason = splitBlockReason();
+      save.disabled = !!reason;
+      save.textContent = reason || save.dataset.label;
+    }
+
     function draw() {
       sheet.setBody(`
         ${slipStrip()}
@@ -992,19 +1100,22 @@ function openEditor(initial = {}, opts = {}) {
         <div id="ed-error"></div>`);
       sizeAmount($('#f-amount', sheet.body));
       renderFoot();
+      updateSplitUI();
     }
 
     function footHtml() {
       const next = slip && slip.total > 1 && slip.index + 1 < slip.total ? ' & next' : '';
       if (slip && dupState && dupState.match === 'ref' && !allowDuplicate) {
-        return `<button class="btn" data-save data-anyway>Save anyway</button><button class="btn btn-primary" data-skip>Skip${next}</button>`;
+        return `<button class="btn" data-save data-anyway data-label="Save anyway">Save anyway</button><button class="btn btn-primary" data-skip>Skip${next}</button>`;
       }
-      if (slip) return `<button class="btn" data-skip>Skip</button><button class="btn btn-primary" data-save>Save${next}</button>`;
-      return `<button class="btn btn-primary" data-save>${isEdit ? 'Save changes' : 'Save'}</button>`;
+      if (slip) return `<button class="btn" data-skip>Skip</button><button class="btn btn-primary" data-save data-label="Save${next}">Save${next}</button>`;
+      const label = isEdit ? 'Save changes' : 'Save';
+      return `<button class="btn btn-primary" data-save data-label="${label}">${label}</button>`;
     }
     function renderFoot() {
       sheet.setFoot(footHtml());
       wireFoot();
+      updateSaveButton();
     }
     /** While saving, every button in the footer is locked and the sheet can't be closed. */
     function setBusy(on) {
@@ -1015,6 +1126,7 @@ function openEditor(initial = {}, opts = {}) {
     function redrawPart() {
       $('#ed-type', sheet.body).innerHTML = typeSection();
       $('#ed-details', sheet.body).innerHTML = detailsSection();
+      updateSplitUI();
     }
 
     function wireFoot() {
@@ -1029,14 +1141,19 @@ function openEditor(initial = {}, opts = {}) {
 
     sheet.body.addEventListener('input', e => {
       const id = e.target.id;
-      if (id === 'f-amount') { f.amount = e.target.value.replace(/[^\d.,]/g, ''); sizeAmount(e.target); $('#amount-wrap', sheet.body).classList.remove('is-invalid'); }
+      if (id === 'f-amount') { f.amount = e.target.value.replace(/[^\d.,]/g, ''); sizeAmount(e.target); $('#amount-wrap', sheet.body).classList.remove('is-invalid'); updateSplitUI(); }
+      if (e.target.dataset.splitAmt !== undefined) {
+        f.splitAmt[e.target.dataset.splitAmt] = e.target.value.replace(/[^\d.,]/g, '');
+        updateSplitUI();
+      }
       if (id === 'f-payee') {
         f.payee = e.target.value;
-        if (!f.catTouched && ['expense', 'income'].includes(f.type)) {
+        if ((f.catGuessed || !f.cats.length) && ['expense', 'income'].includes(f.type)) {
           const g = guessCategory(f.payee);
-          if (g && g !== f.category && activeCats(f.type).some(c => c.name === g)) {
-            f.category = g;
-            $$('[data-cat-pick]', sheet.body).forEach(b => b.classList.toggle('is-on', b.dataset.catPick === g));
+          if (g && !(f.cats.length === 1 && f.cats[0] === g) && activeCats(f.type).some(c => c.name === g)) {
+            f.cats = [g];
+            f.catGuessed = true;
+            refreshCats();
           }
         }
       }
@@ -1061,7 +1178,11 @@ function openEditor(initial = {}, opts = {}) {
         if (newType !== f.type) {
           const wasGroup = groupOf(f.type);
           f.type = newType;
-          if (g !== wasGroup) { f.category = ''; f.catTouched = false; if (['expense', 'income'].includes(g)) f.category = guessCategory(f.payee); }
+          if (g !== wasGroup) {
+            f.cats = []; f.catGuessed = false;
+            const guess = ['expense', 'income'].includes(g) ? guessCategory(f.payee) : '';
+            if (guess && activeCats(g).some(c => c.name === guess)) { f.cats = [guess]; f.catGuessed = true; }
+          }
           if (g === 'friend' && !f.person && slip && f.payee) f.person = f.payee;
           redrawPart();
         }
@@ -1071,8 +1192,23 @@ function openEditor(initial = {}, opts = {}) {
       if (ft) { f.type = ft.dataset.ftype; redrawPart(); return; }
       const cp = e.target.closest('[data-cat-pick]');
       if (cp) {
-        f.category = cp.dataset.catPick; f.catTouched = true;
-        $$('[data-cat-pick]', sheet.body).forEach(b => b.classList.toggle('is-on', b === cp));
+        const name = cp.dataset.catPick;
+        if (groupOf(f.type) !== 'expense') f.cats = [name];                          // income: one category
+        else if (f.cats.includes(name)) f.cats = f.cats.filter(c => c !== name);     // tap again to un-pick
+        else if (f.catGuessed && f.cats.length === 1) f.cats = [name];               // replace the app's guess
+        else f.cats = f.cats.concat(name);                                          // add: 2+ = split bill
+        f.catGuessed = false;
+        refreshCats();
+        return;
+      }
+      const use = e.target.closest('[data-split-use]');
+      if (use) {
+        const st = splitState();
+        const v = (st.remaining / 100).toFixed(2).replace(/\.00$/, '');
+        f.splitAmt[use.dataset.splitUse] = v;
+        const inp = $$('[data-split-amt]', sheet.body).find(i => i.dataset.splitAmt === use.dataset.splitUse);
+        if (inp) inp.value = v;
+        updateSplitUI();
         return;
       }
       const pp = e.target.closest('[data-pick-person]');
@@ -1096,12 +1232,15 @@ function openEditor(initial = {}, opts = {}) {
       if (!(amount > 0)) return fail('Enter an amount.', '#f-amount');
       if (isFriend(f.type) && !f.person.trim()) return fail('Which friend is this?', '#f-person');
       if (!/^\d{4}-\d{2}-\d{2}$/.test(f.date)) return fail('Pick a date.', '#f-date');
+      const splitProblem = splitBlockReason();
+      if (splitProblem) return fail(esc(splitProblem) + '. The category amounts must add up to the total.');
+      const splits = isSplit() ? f.cats.map(c => ({ category: c, amount: toSatang(f.splitAmt[c]) / 100 })) : [];
 
       saving = true;
       setBusy(true);
       try {
         const payload = {
-          id: f.id, type: f.type, amount, category: f.category, payee: f.payee.trim(), person: f.person.trim(),
+          id: f.id, type: f.type, amount, category: splits.length ? 'Split' : (f.cats[0] || ''), splits, payee: f.payee.trim(), person: f.person.trim(),
           note: f.note.trim(), date: f.date, time: f.time, account: f.account, method: f.method,
           source: slip ? 'slip' : (initial.source || 'manual'), slip_ref: f.slip_ref,
           slipFileId: slip ? slip.fileId : '', requestId, allowDuplicate
@@ -1184,7 +1323,9 @@ function openDetail(id) {
   const rows = [
     ['Type', isFriend(t.type) ? TYPE[t.type].short : TYPE[t.type].label],
     isFriend(t.type) ? ['Friend', t.person] : null,
-    t.category ? ['Category', `${ic.emoji} ${t.category}`] : null,
+    ...(splitsOf(t)
+      ? [['Split into', `${splitsOf(t).length} categories`]].concat(splitsOf(t).map(p => [`${catInfo(p.category, 'expense').emoji || '📦'} ${p.category}`, money(p.amount)]))
+      : [t.category ? ['Category', `${ic.emoji} ${t.category}`] : null]),
     t.payee ? [t.type === 'income' ? 'From' : 'Paid to', t.payee] : null,
     ['Date', `${dayLabel(t.date)}${t.time ? ', ' + t.time : ''}`],
     t.account ? ['Account', t.account] : null,

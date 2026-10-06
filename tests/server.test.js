@@ -148,6 +148,61 @@ const nG = count();
 let ghostErr = null; try { run('saveTransaction_(ghost)'); } catch (e) { ghostErr = e; }
 check('editing a deleted row errors instead of adding', ghostErr && count() === nG);
 
+// ---------- Splitting one bill across categories ----------
+const splitTx = (extra) => Object.assign({ type: 'expense', amount: 400, date: '2026-10-05', time: '19:00', payee: 'Mall', requestId: 'split-' + Math.random() }, extra);
+const tryRun = (code) => { try { return { ok: run(code) }; } catch (e) { return { err: e.message }; } };
+const sheetRow = id => { const r = sheets.Transactions.rows.find(x => x[0] === id); return r; };
+const splitsCol = server.ctx.TABLES.transactions.headers.indexOf('splits');
+
+// old Sheet without the 'splits' header gets it added automatically
+sheets.Transactions.rows[0][splitsCol] = '';
+ctx.s1 = splitTx({ splits: [{ category: 'Food', amount: 300 }, { category: 'Drink', amount: 50 }, { category: 'Entertainment', amount: 50 }] });
+const s1 = run('saveTransaction_(s1)');
+check('split saved: category column says "Split"', s1.category === 'Split' && s1.splits.length === 3, s1);
+check('split saved: readable cell in the Sheet', sheetRow(s1.id)[splitsCol] === 'Food: 300 | Drink: 50 | Entertainment: 50', sheetRow(s1.id)[splitsCol]);
+check('missing "splits" header added to an old Sheet', sheets.Transactions.rows[0][splitsCol] === 'splits');
+const back = run('readTable_("transactions")').find(t => t.id === s1.id);
+check('split read back as parts', JSON.stringify(back.splits) === JSON.stringify([{ category: 'Food', amount: 300 }, { category: 'Drink', amount: 50 }, { category: 'Entertainment', amount: 50 }]), back.splits);
+check('normal transactions have no parts', run('readTable_("transactions")').find(t => t.payee === 'Retry test').splits.length === 0);
+
+ctx.bad1 = splitTx({ splits: [{ category: 'Food', amount: 300 }, { category: 'Drink', amount: 50 }] });
+check('parts must add up to the total', /add up to ฿350\.00 but the total is ฿400\.00/.test(tryRun('saveTransaction_(bad1)').err || ''), tryRun('saveTransaction_(bad1)'));
+ctx.bad2 = splitTx({ splits: [{ category: 'Food', amount: 400 }, { category: 'Drink', amount: 0 }] });
+check('every part must be above 0', /above 0/.test(tryRun('saveTransaction_(bad2)').err || ''));
+ctx.bad3 = splitTx({ splits: [{ category: 'Food', amount: 200 }, { category: 'food', amount: 200 }] });
+check('no category twice', /twice/.test(tryRun('saveTransaction_(bad3)').err || ''));
+ctx.bad4 = splitTx({ type: 'income', splits: [{ category: 'Allowance', amount: 200 }, { category: 'Other', amount: 200 }] });
+check('only expenses can be split', /Only expenses/.test(tryRun('saveTransaction_(bad4)').err || ''));
+ctx.bad5 = splitTx({ splits: [{ category: '', amount: 200 }, { category: 'Drink', amount: 200 }] });
+check('every part needs a category', /Pick a category/.test(tryRun('saveTransaction_(bad5)').err || ''));
+ctx.cents = splitTx({ amount: 96.2, splits: [{ category: 'Food', amount: 60.1 }, { category: 'Drink', amount: 36.1 }] });
+check('satang add up exactly (60.10 + 36.10 = 96.20)', !!tryRun('saveTransaction_(cents)').ok, tryRun('saveTransaction_(cents)'));
+ctx.one = splitTx({ splits: [{ category: 'Drink', amount: 400 }] });
+const one = run('saveTransaction_(one)');
+check('a "split" with one part is a normal transaction', one.category === 'Drink' && one.splits.length === 0 && sheetRow(one.id)[splitsCol] === '', one);
+
+// edit: split -> single, single -> split
+ctx.toSingle = { ...back, splits: [], category: 'Food', requestId: 'e1' };
+run('saveTransaction_(toSingle)');
+let ed = run('readTable_("transactions")').find(t => t.id === s1.id);
+check('editing a split back to one category clears the parts', ed.category === 'Food' && ed.splits.length === 0 && sheetRow(s1.id)[splitsCol] === '', ed);
+ctx.toSplit = { ...ed, splits: [{ category: 'Food', amount: 350 }, { category: 'Dessert', amount: 50 }], requestId: 'e2' };
+run('saveTransaction_(toSplit)');
+ed = run('readTable_("transactions")').find(t => t.id === s1.id);
+check('editing a single into a split works', ed.category === 'Split' && ed.splits.length === 2, ed);
+
+// learning: only from single-category saves
+const rulesBefore = JSON.stringify(run('readTable_("rules")'));
+ctx.learnSplit = splitTx({ payee: 'Brand New Mall', splits: [{ category: 'Food', amount: 200 }, { category: 'Shopping', amount: 200 }] });
+run('saveTransaction_(learnSplit)');
+check('split bills do not teach payee -> category', JSON.stringify(run('readTable_("rules")')) === rulesBefore);
+
+// renaming a category also renames it inside split bills
+ctx.renameSettings = { categories: run('readTable_("categories")').map(c => ({ ...c, originalName: c.name, name: c.name === 'Dessert' && c.type === 'expense' ? 'Sweets' : c.name })), accounts: run('readTable_("accounts")') };
+run('saveSettings_(renameSettings)');
+check('renaming a category updates split bills', /Sweets: 50/.test(sheetRow(s1.id)[splitsCol]) && !/Dessert/.test(sheetRow(s1.id)[splitsCol]), sheetRow(s1.id)[splitsCol]);
+check('cell written by hand is understood', JSON.stringify(run('parseSplits_("Food : 1,200.50 |  Drink:99.5 ")')) === JSON.stringify([{ category: 'Food', amount: 1200.5 }, { category: 'Drink', amount: 99.5 }]));
+
 // ---------- API + sign-in ----------
 ctx.CONFIG.GOOGLE_CLIENT_ID = 'client-123.apps.googleusercontent.com';
 const exp = Math.floor(Date.now() / 1000) + 3600;

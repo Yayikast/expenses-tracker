@@ -324,3 +324,25 @@ select.input { background-image: linear-gradient(45deg, transparent 50%, var(--f
 }
 .google-btn svg { width: 20px; height: 20px; }
 .google-btn[disabled] { opacity: .5; }
+
+/* ---------- Split bill (2+ categories picked) ---------- */
+.label-hint { font-weight: 400; color: var(--faint); margin-left: 4px; }
+.split-box { margin-top: 10px; background: var(--card-2); border-radius: 14px; padding: 6px 12px 10px; }
+.split-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid var(--line); }
+.split-row:first-child { border-top: 0; }
+.split-cat { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; font-weight: 500; }
+.split-cat .e { font-size: 18px; }
+.split-cat .n { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.split-amt { display: flex; align-items: center; gap: 4px; flex: none; }
+.split-amt .cur { color: var(--muted); font-weight: 600; }
+.split-amt .input { width: 104px; height: 40px; text-align: right; font-weight: 600; }
+.split-use { flex: none; height: 32px; padding: 0 10px; font-size: 13px; background: var(--accent-soft); color: var(--accent); }
+.split-bar { height: 6px; border-radius: 6px; background: var(--line); margin: 8px 0 6px; overflow: hidden; }
+.split-bar i { display: block; height: 100%; border-radius: 6px; transition: width .2s; }
+.split-bar i.warn { background: var(--lend); }
+.split-bar i.ok { background: var(--income); }
+.split-bar i.bad { background: var(--danger); }
+.split-rem { font-size: 13.5px; }
+.split-rem.warn { color: var(--lend); }
+.split-rem.ok { color: var(--income); font-weight: 600; }
+.split-rem.bad { color: var(--danger); }

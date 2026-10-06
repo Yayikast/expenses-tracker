@@ -27,6 +27,7 @@ function createServer() {
       getDataRange: () => { const lr = sh.getLastRow(); let lc = 0; sh.rows.slice(0, lr).forEach(row => { for (let j = row.length; j > 0; j--) if (row[j - 1] !== '' && row[j - 1] !== undefined) { lc = Math.max(lc, j); break; } }); return range(1, 1, Math.max(lr, 1), Math.max(lc, 1)); },
       getLastRow: () => { for (let i = sh.rows.length; i > 0; i--) if ((sh.rows[i - 1] || []).some(v => v !== '' && v !== undefined)) return i; return 0; },
       getMaxRows: () => sh.max, insertRowsAfter: (a, n) => { sh.max += n; },
+      getLastColumn: () => sh.rows.reduce((m, row) => { for (let j = row.length; j > 0; j--) if (row[j - 1] !== '' && row[j - 1] !== undefined) return Math.max(m, j); return m; }, 0),
       appendRow: row => { set(sh.getLastRow() + 1, 1, row[0]); row.forEach((v, j) => set(sh.getLastRow(), j + 1, v)); },
       deleteRow: r => { sh.rows.splice(r - 1, 1); },
       setFrozenRows() {}, setColumnWidth() {}
