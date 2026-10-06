@@ -4,13 +4,15 @@
  *
  * Flow:
  *   1. readSlip_()      saves the image to Drive/_pending, reads it, returns a draft
- *   2. saveTransaction() moves the image to Drive/YYYY-MM and renames it
+ *   2. saveTransaction_() moves the image to Drive/YYYY-MM and renames it
  *      or discardSlip_() throws it away if you skip it
  */
 
 /**
  * payload: { base64, mimeType, qrText }
  * returns: { fileId, draft, duplicate, ocrError }
+ *   duplicate: null, or the matching saved transaction plus match: 'ref' (same slip, already saved)
+ *              or 'datetime' (possible duplicate: same date, time and amount)
  */
 function readSlip_(payload) {
   if (!payload || !payload.base64) throw new Error('No image received.');
@@ -42,7 +44,7 @@ function readSlip_(payload) {
   return {
     fileId: file.getId(),
     draft: draft,
-    duplicate: dup,
+    duplicate: dup ? Object.assign({ match: dup.match }, dup.tx) : null,
     ocrError: ocrError
   };
 }

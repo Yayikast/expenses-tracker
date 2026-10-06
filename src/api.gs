@@ -20,16 +20,31 @@ function getAppData_() {
   };
 }
 
-/** Creates (no id) or updates (with id) a transaction. Returns the saved record. */
+/**
+ * Creates (no id) or updates (with id) a transaction. Returns the saved record.
+ *
+ * Safe to call more than once for the same review card: the app sends a requestId
+ * (one per card), and slips also carry their unique pending fileId. If an earlier
+ * attempt already saved (for example the reply got lost on a bad connection), this
+ * updates that same row instead of adding a second one or reporting a duplicate.
+ */
 function saveTransaction_(input) {
   var tx = cleanTransaction_(input);
+  var requestId = String(input.requestId || '').slice(0, 80);
   return withLock_(function () {
-    if (input.source === 'slip' && tx.slip_ref && !input.allowDuplicate) {
+    var earlier = !tx.id ? findEarlierSave_(requestId, input.slipFileId) : null;
+    if (earlier) tx.id = earlier.id;
+
+    // Only brand-new slips are checked; editing a saved transaction never counts as a duplicate
+    if (!tx.id && input.source === 'slip' && !input.allowDuplicate) {
       var dup = findDuplicate_(tx.slip_ref, '', '', '', tx.id);
-      if (dup) throw new Error('DUPLICATE: this slip is already saved (' + dup.date + ', ฿' + dup.amount + ').');
+      if (dup && dup.match === 'ref') {
+        throw codedError_('DUPLICATE', 'This slip is already saved (' + dup.tx.date + ', ฿' + dup.tx.amount + ').', dup.tx);
+      }
     }
 
     var row = tx.id ? findRowById_('transactions', tx.id) : -1;
+    if (tx.id && row < 0) throw new Error('This transaction no longer exists. It may have been deleted.');
     var existing = row > 0 ? readRecordAt_('transactions', row) : null;
 
     if (input.slipFileId) {
@@ -50,12 +65,43 @@ function saveTransaction_(input) {
       tx.updated_at = '';
       appendRecord_('transactions', tx);
     }
+    rememberSave_(requestId, tx.id);
 
     if (tx.payee && tx.category && (tx.type === 'expense' || tx.type === 'income')) {
       learnPayee_(tx.payee, tx.category);
     }
     return tx;
   });
+}
+
+/** Did an earlier attempt of this same review card already create a row? */
+function findEarlierSave_(requestId, slipFileId) {
+  if (requestId) {
+    var id = CacheService.getScriptCache().get('save_' + requestId);
+    if (id) {
+      var row = findRowById_('transactions', id);
+      if (row > 0) return readRecordAt_('transactions', row);
+    }
+  }
+  if (slipFileId) {
+    var all = readTable_('transactions');
+    for (var i = 0; i < all.length; i++) {
+      if (fileIdFromUrl_(all[i].slip_url) === slipFileId) return all[i];
+    }
+  }
+  return null;
+}
+
+function rememberSave_(requestId, txId) {
+  if (requestId) CacheService.getScriptCache().put('save_' + requestId, txId, 21600); // 6 hours
+}
+
+/** An error the app can recognise by code, optionally carrying data (e.g. the existing transaction). */
+function codedError_(code, message, data) {
+  var e = new Error(message);
+  e.code = code;
+  e.data = data || null;
+  return e;
 }
 
 function deleteTransaction_(id) {
@@ -149,26 +195,50 @@ function cleanTransaction_(input) {
 }
 
 /**
- * Same slip saved before?
- * 1. Reference numbers match (one may be a longer version of the other: QR vs printed)
- * 2. No reference: same date, time and amount
+ * Is this slip already in the Sheet?
+ * Returns { match: 'ref' | 'datetime', tx } or null.
+ *
+ * 'ref'      the bank reference number matches: it IS the same payment.
+ *            (The QR reference can be a longer version of the printed one, e.g. Krungsri.)
+ * 'datetime' no usable reference, but a transaction with the same date, time and amount
+ *            exists: only a POSSIBLE duplicate (two real payments can look like this).
  */
 function findDuplicate_(ref, date, time, amount, excludeId) {
   var all = readTable_('transactions');
-  ref = String(ref || '').replace(/\s/g, '');
-  for (var i = 0; i < all.length; i++) {
-    var t = all[i];
-    if (excludeId && t.id === excludeId) continue;
-    var r = String(t.slip_ref || '');
-    if (ref && r && ref.length >= 10 && r.length >= 10 && (r.indexOf(ref) >= 0 || ref.indexOf(r) >= 0)) return t;
+  if (isUsableRef_(ref)) {
+    for (var i = 0; i < all.length; i++) {
+      var t = all[i];
+      if (excludeId && t.id === excludeId) continue;
+      if (isUsableRef_(t.slip_ref) && refsMatch_(ref, t.slip_ref)) return { match: 'ref', tx: t };
+    }
+    return null;
   }
-  if (!ref && date && time && amount) {
+  if (date && time && amount) {
     for (var j = 0; j < all.length; j++) {
       var u = all[j];
-      if (u.date === date && u.time === time && Number(u.amount) === Number(amount)) return u;
+      if (excludeId && u.id === excludeId) continue;
+      if (u.date === date && u.time === time && Number(u.amount) === Number(amount)) return { match: 'datetime', tx: u };
     }
   }
   return null;
+}
+
+function normalizeRef_(ref) {
+  return String(ref || '').replace(/\s/g, '').toUpperCase();
+}
+
+/** A real bank reference: long enough and mostly numbers (not a word OCR picked up by mistake). */
+function isUsableRef_(ref) {
+  var r = normalizeRef_(ref);
+  return r.length >= 10 && (r.match(/\d/g) || []).length >= 6;
+}
+
+/** Same reference, or one is the start of the other (printed ref vs longer QR ref). */
+function refsMatch_(a, b) {
+  a = normalizeRef_(a); b = normalizeRef_(b);
+  if (a === b) return true;
+  var shorter = a.length < b.length ? a : b, longer = a.length < b.length ? b : a;
+  return shorter.length >= 16 && longer.indexOf(shorter) === 0;
 }
 
 /** Remembers payee -> category so the next slip from the same shop is pre-filled. */

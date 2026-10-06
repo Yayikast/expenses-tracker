@@ -3,7 +3,7 @@
  * The web app is an API: your GitHub Pages site sends requests here with fetch().
  *
  * Every request is JSON: { action, args, session }
- * Every reply is JSON:   { ok: true, result } or { ok: false, error, code }
+ * Every reply is JSON:   { ok: true, result } or { ok: false, error, code, data }
  *
  * Only "login" works without a session. Login needs a Google sign-in token
  * that belongs to the owner of this script (you). See auth.gs.
@@ -43,8 +43,8 @@ function doPost(e) {
     return json_({ ok: true, result: result });
   } catch (err) {
     var msg = String(err && err.message || err);
-    var code = /^AUTH:/.test(msg) ? 'AUTH' : 'ERROR';
-    return json_({ ok: false, error: msg.replace(/^AUTH:\s*/, ''), code: code });
+    var code = (err && err.code) || (/^AUTH:/.test(msg) ? 'AUTH' : 'ERROR');
+    return json_({ ok: false, error: msg.replace(/^AUTH:\s*/, ''), code: code, data: (err && err.data) || null });
   }
 }
 

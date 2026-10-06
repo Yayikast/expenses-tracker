@@ -1,83 +1,11 @@
 // Runs the Apps Script server code against a fake in-memory Sheet + Drive.
 // Run: node tests/server.test.js
-const fs = require('fs'), path = require('path'), vm = require('vm');
-
-function makeSheet(name) {
-  const sh = { name, rows: [], max: 1000 };
-  const cell = (r, c) => (sh.rows[r - 1] || [])[c - 1] ?? '';
-  const set = (r, c, v) => { while (sh.rows.length < r) sh.rows.push([]); sh.rows[r - 1][c - 1] = v; };
-  const range = (r, c, nr = 1, nc = 1) => ({
-    getValues: () => Array.from({ length: nr }, (_, i) => Array.from({ length: nc }, (_, j) => cell(r + i, c + j))),
-    setValues: vals => { vals.forEach((row, i) => row.forEach((v, j) => {
-      if (typeof v === 'string' && v.startsWith("'")) v = v.slice(1);
-      set(r + i, c + j, v);
-    })); return range(r, c, nr, nc); },
-    setNumberFormats: () => range(r, c, nr, nc), setNumberFormat: () => range(r, c, nr, nc),
-    clearContent: () => { for (let i = 0; i < nr; i++) for (let j = 0; j < nc; j++) set(r + i, c + j, ''); },
-    createTextFinder: text => ({ matchEntireCell: () => ({ findNext: () => {
-      for (let i = 0; i < nr; i++) if (String(cell(r + i, c)) === text) return { getRow: () => r + i };
-      return null; } }) }),
-    setFontWeight() { return this; }, setBackground() { return this; }, setFontColor() { return this; }, setDataValidation() { return this; },
-    setValue(v) { set(r, c, v); return this; }, setFormula(v) { set(r, c, v); return this; }
-  });
-  Object.assign(sh, {
-    getName: () => name,
-    getRange: (r, c, nr, nc) => typeof r === 'string' ? range(1, 1) : range(r, c, nr, nc),
-    getLastRow: () => { for (let i = sh.rows.length; i > 0; i--) if ((sh.rows[i - 1] || []).some(v => v !== '' && v !== undefined)) return i; return 0; },
-    getMaxRows: () => sh.max, insertRowsAfter: (a, n) => { sh.max += n; },
-    appendRow: row => { set(sh.getLastRow() + 1, 1, row[0]); row.forEach((v, j) => set(sh.getLastRow(), j + 1, v)); },
-    deleteRow: r => { sh.rows.splice(r - 1, 1); },
-    setFrozenRows() {}, setColumnWidth() {}
-  });
-  return sh;
-}
-const sheets = {};
-const files = {};
-let fileN = 0;
-const mkFolder = (id, name) => ({ id, name, getId: () => id, getFoldersByName: n => { const f = folders[id + '/' + n]; return { hasNext: () => !!f, next: () => f }; },
-  createFolder: n => (folders[id + '/' + n] = mkFolder(id + '/' + n, n)),
-  createFile: blob => { const fid = 'F' + (++fileN) + 'xxxxxxxxxxxxxxxxxxxxxx'; const f = files[fid] = { id: fid, name: '', parent: id, trashed: false,
-    getId: () => fid, setName(n) { f.name = n; return f; }, moveTo(folder) { f.parent = folder.getId(); }, getUrl: () => 'https://drive.google.com/file/d/' + fid + '/view',
-    setTrashed(t) { f.trashed = t; }, getParents: () => { let done = false; return { hasNext: () => !done, next: () => { done = true; return { getId: () => f.parent }; } }; },
-    getBlob: () => ({ getContentType: () => 'image/jpeg', getBytes: () => [1, 2, 3] }) }; return f; } });
-const folders = { ROOT: mkFolder('ROOT', 'root') };
-let ocrText = '';
-const ctx = {
-  console,
-  SpreadsheetApp: { openById: () => ({
-    getSheetByName: n => sheets[n] || null, insertSheet: n => (sheets[n] = makeSheet(n)), getUrl: () => 'https://sheet',
-    setSpreadsheetTimeZone() {}, getSheets: () => Object.values(sheets), deleteSheet: s => delete sheets[s.name] }),
-    newDataValidation: () => { const b = { requireValueInList: () => b, requireValueInRange: () => b, requireNumberGreaterThan: () => b, setAllowInvalid: () => b, build: () => ({}) }; return b; } },
-  DriveApp: { getFolderById: () => folders.ROOT, getFileById: id => files[id] },
-  Drive: { Files: { create: () => { const f = folders.ROOT.createFile(); return { id: f.id }; } } },
-  DocumentApp: { openById: () => ({ getBody: () => ({ getText: () => ocrText }) }) },
-  Utilities: {
-    DigestAlgorithm: { SHA_256: 'sha256' },
-    computeDigest: (alg, str) => Array.from(require('crypto').createHash('sha256').update(str).digest()).map(b => b > 127 ? b - 256 : b),
-    formatDate: (d, tz, p) => { const z = n => String(n).padStart(2, '0');
-      return p.replace('yyyy', d.getFullYear()).replace('MM', z(d.getMonth() + 1)).replace('dd', z(d.getDate())).replace('HH', z(d.getHours())).replace('mm', z(d.getMinutes())).replace('ss', z(d.getSeconds())); },
-    getUuid: () => require('crypto').randomUUID(),
-    newBlob: () => ({}), base64Decode: () => [], base64Encode: () => 'AAA'
-  },
-  LockService: { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) },
-  Logger: { log() {} }, MimeType: {},
-  ContentService: { MimeType: { JSON: 'json' }, createTextOutput: t => ({ text: t, setMimeType() { return this; } }) },
-  PropertiesService: { getScriptProperties: () => ({
-    getProperty: k => props[k] ?? null, setProperty: (k, v) => { props[k] = v; }, deleteProperty: k => { delete props[k]; },
-    getProperties: () => ({ ...props }) }) },
-  Session: { getEffectiveUser: () => ({ getEmail: () => 'owner@gmail.com' }) },
-  UrlFetchApp: { fetch: url => { const tok = decodeURIComponent(url.split('id_token=')[1]); const info = tokens[tok];
-    return { getResponseCode: () => info ? 200 : 400, getContentText: () => JSON.stringify(info || { error: 'invalid_token' }) }; } }
-};
-const props = {};
-const tokens = {};
-vm.createContext(ctx);
-for (const f of ['config.gs', 'parsers.gs', 'db.gs', 'api.gs', 'slip.gs', 'setup.gs', 'auth.gs', 'Code.gs'])
-  vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'src', f), 'utf8'), ctx, { filename: f });
+const fs = require('fs'), path = require('path');
+const server = require('./fake-apps-script').createServer();
+const { ctx, run, sheets, files, props, tokens } = server;
 
 let fail = 0;
 const check = (name, cond, extra) => { if (cond) console.log('ok  ', name); else { fail++; console.log('FAIL', name, extra !== undefined ? JSON.stringify(extra) : ''); } };
-const run = code => vm.runInContext(code, ctx);
 
 run('setup()');
 check('tabs created', ['Transactions', 'Categories', 'Accounts', 'PayeeRules', 'Summary'].every(n => sheets[n]));
@@ -99,7 +27,7 @@ check('edit in place', all.length === 1 && all[0].note === '=HYPERLINK("x")' && 
 check('rule updated to new category', run('readTable_("rules")').filter(r => r.pattern === 'Cha Tra Mue').length === 1 && run('readTable_("rules")').find(r => r.pattern === 'Cha Tra Mue').category === 'Food');
 
 // slip
-ocrText = fs.readFileSync(path.join(__dirname, 'fixtures', 'krungsri.tesseract.txt'), 'utf8');
+server.setOcr(fs.readFileSync(path.join(__dirname, 'fixtures', 'krungsri.tesseract.txt'), 'utf8'));
 ctx.payload = { base64: 'x', mimeType: 'image/jpeg', qrText: '0046000600000101030250225KSA00000000951560434407ac5102TH9104F69B' };
 const r1 = run('readSlip_(payload)');
 check('readSlip draft', r1.draft.amount === 195 && r1.draft.payee === 'LINE MAN' && r1.draft.account === 'Krungsri' && r1.draft.category === 'Food' && !r1.duplicate, r1.draft);
@@ -114,9 +42,20 @@ check('duplicate detected on re-upload', r2.duplicate && r2.duplicate.id === t2.
 ctx.payload2 = { base64: 'x', qrText: '' };
 const r3 = run('readSlip_(payload2)');
 check('duplicate detected without QR (printed ref)', r3.duplicate && r3.duplicate.id === t2.id, r3.draft.ref);
-let threw = '';
-try { run('saveTransaction_(input)'); } catch (e) { threw = e.message; }
-check('server blocks duplicate save', /^DUPLICATE/.test(threw), threw);
+check('readSlip says the match is by reference', r2.duplicate.match === 'ref' && r3.duplicate.match === 'ref', [r2.duplicate.match, r3.duplicate.match]);
+
+// Same review card sent again (reply lost on a bad connection): must NOT say duplicate, must NOT add a row
+const rowsBefore = run('readTable_("transactions")').length;
+const again = run('saveTransaction_(input)');
+check('resending the same slip card returns the saved row', again.id === t2.id, again);
+check('resending the same slip card adds no row', run('readTable_("transactions")').length === rowsBefore);
+
+// A DIFFERENT card (re-uploaded image) for a slip that is really saved: blocked, with the existing row attached
+ctx.dupInput = { ...ctx.input, slipFileId: r2.fileId, requestId: 'card-B' };
+let threw = null;
+try { run('saveTransaction_(dupInput)'); } catch (e) { threw = e; }
+check('server blocks a real duplicate', threw && threw.code === 'DUPLICATE' && threw.data && threw.data.id === t2.id, threw && threw.message);
+check('blocked duplicate adds no row', run('readTable_("transactions")').length === rowsBefore);
 run('discardSlip_("' + r2.fileId + '")');
 check('discard trashes pending', files[r2.fileId].trashed === true);
 check('discard refuses filed slip', run('discardSlip_("' + r1.fileId + '")') === false && !files[r1.fileId].trashed);
@@ -146,6 +85,55 @@ check('delete removes row + trashes slip', run('getAppData_()').transactions.len
 ctx.Drive.Files.create = () => { throw new Error('Drive is not defined'); };
 const r4 = run('readSlip_(payload2)');
 check('OCR failure handled', r4.ocrError && r4.fileId && r4.draft.amount === '', r4);
+
+// ---------- Saving: retries, duplicates, edits ----------
+const count = () => run('readTable_("transactions")').length;
+
+// Manual save resent with the same requestId (first reply lost) -> same row, latest values
+ctx.m1 = { type: 'expense', amount: 80, date: '2026-10-04', time: '12:00', category: 'Food', payee: 'Retry test', requestId: 'card-M1' };
+const n0 = count();
+const m1 = run('saveTransaction_(m1)');
+ctx.m1b = { ...ctx.m1, amount: 85 };
+const m1b = run('saveTransaction_(m1b)');
+check('manual resend with same requestId updates, not duplicates', m1b.id === m1.id && count() === n0 + 1 && m1b.amount === 85, [m1.id, m1b.id, count() - n0]);
+ctx.m2 = { ...ctx.m1, requestId: 'card-M2' };
+check('a new card with the same details is a new row (no false block)', run('saveTransaction_(m2)').id !== m1.id && count() === n0 + 2);
+
+// Reference rules
+check('word picked up by OCR is not a reference', !run('isUsableRef_("Bankreferenceno")') && !run('isUsableRef_("")'));
+check('real references are usable', run('isUsableRef_("KSA00000000951560434")') && run('isUsableRef_("dc6230a7-9828-4e70-b148-a095d7d6c9e3")'));
+check('printed ref matches longer QR ref', run('refsMatch_("KSA00000000951560434", "KSA00000000951560434407ac")'));
+check('different slips do not match', !run('refsMatch_("2026090615434424004302908", "2026090615434424004302909")'));
+check('short ref inside another does not match', !run('refsMatch_("0951560434", "KSA00000000951560434407ac")'));
+
+ctx.g1 = { type: 'expense', amount: 50, date: '2026-10-04', time: '13:00', payee: 'Shop A', source: 'slip', slip_ref: 'Bankreferenceno', requestId: 'card-G1' };
+ctx.g2 = { ...ctx.g1, amount: 70, payee: 'Shop B', requestId: 'card-G2' };
+run('saveTransaction_(g1)');
+let gErr = null; try { run('saveTransaction_(g2)'); } catch (e) { gErr = e; }
+check('two slips with a junk "reference" are not treated as the same', !gErr, gErr && gErr.message);
+
+// Same date + time + amount but no reference: only a POSSIBLE duplicate, never blocks
+ctx.dt = { type: 'expense', amount: 50, date: '2026-10-04', time: '13:00', payee: 'Shop C', source: 'slip', slip_ref: '', requestId: 'card-DT' };
+let dtErr = null; try { run('saveTransaction_(dt)'); } catch (e) { dtErr = e; }
+check('same date/time/amount without a reference is not blocked', !dtErr, dtErr && dtErr.message);
+const fd = run('findDuplicate_("", "2026-10-04", "13:00", 50, "")');
+check('same date/time/amount is reported as only "datetime"', fd && fd.match === 'datetime', fd);
+
+// "Save anyway" really saves
+ctx.anyway = { ...ctx.dupInput, requestId: 'card-ANY', allowDuplicate: true };
+const nA = count();
+check('save anyway adds the row', run('saveTransaction_(anyway)').id && count() === nA + 1);
+
+// Editing a slip transaction that shares a reference with another row is not blocked
+ctx.edit = { ...run('readTable_("transactions")').find(t => t.slip_ref === 'KSA00000000951560434407ac'), note: 'edited', source: 'slip' };
+let eErr = null; try { run('saveTransaction_(edit)'); } catch (e) { eErr = e; }
+check('editing a saved slip is never a duplicate', !eErr, eErr && eErr.message);
+
+// Editing a row that was deleted does not quietly create a new one
+ctx.ghost = { id: 't_doesnotexist', type: 'expense', amount: 10, date: '2026-10-04' };
+const nG = count();
+let ghostErr = null; try { run('saveTransaction_(ghost)'); } catch (e) { ghostErr = e; }
+check('editing a deleted row errors instead of adding', ghostErr && count() === nG);
 
 // ---------- API + sign-in ----------
 ctx.CONFIG.GOOGLE_CLIENT_ID = 'client-123.apps.googleusercontent.com';
@@ -180,6 +168,9 @@ r = post({ action: 'saveTransaction', args: [{ type: 'expense', amount: 60, date
 check('save through API', r.ok && r.result.id, r);
 r = post({ action: 'setup', args: [], session: sess });
 check('unknown/private action blocked', !r.ok && r.code === 'BAD_REQUEST', r);
+const freshSlip = run('readSlip_(payload2)');
+r = post({ action: 'saveTransaction', args: [{ ...ctx.dupInput, slipFileId: freshSlip.fileId, requestId: 'card-API' }], session: sess });
+check('duplicate comes back through the API with code + existing row', !r.ok && r.code === 'DUPLICATE' && r.data && r.data.id && /already saved/.test(r.error), r);
 r = post({ action: 'saveTransaction', args: [{ type: 'expense', amount: -5, date: '2026-10-03' }], session: sess });
 check('validation errors come back as messages', !r.ok && r.code === 'ERROR' && /Amount/.test(r.error), r);
 check('bad JSON handled', JSON.parse(ctx.doPost({ postData: { contents: '{nope' } }).text).code === 'BAD_REQUEST');

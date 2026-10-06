@@ -15,7 +15,19 @@ const auth = {
 };
 
 class ApiError extends Error {
-  constructor(message, code) { super(message); this.code = code; }
+  constructor(message, code, data) { super(message); this.code = code; this.data = data || null; }
+}
+
+/** True when we don't know if the server finished (connection dropped / reply lost). */
+const isUnknownOutcome = err => err && (err.code === 'NETWORK' || err.code === 'BAD_REPLY');
+
+/**
+ * Requests that are safe to send twice. saveTransaction counts only when it carries a
+ * requestId: the server then updates the same row instead of adding another one.
+ */
+function canRetry(action, args) {
+  if (action === 'saveTransaction') return !!(args[0] && args[0].requestId);
+  return action === 'getAppData' || action === 'getSlipImage' || action === 'discardSlip';
 }
 
 async function api(action, ...args) {
@@ -23,8 +35,9 @@ async function api(action, ...args) {
   const s = auth.get();
   const body = JSON.stringify({ action, args, session: s && s.session });
   let data = null, lastProblem = '';
-  // Google sometimes sends a one-off odd reply, so try twice before giving up
-  for (let attempt = 1; attempt <= 2 && !data; attempt++) {
+  // Google sometimes sends a one-off odd reply. Try twice, but only for requests that are safe to repeat.
+  const attempts = canRetry(action, args) ? 2 : 1;
+  for (let attempt = 1; attempt <= attempts && !data; attempt++) {
     let res;
     try {
       res = await fetch(CFG.API_URL, {
@@ -37,7 +50,7 @@ async function api(action, ...args) {
       });
     } catch (e) {
       lastProblem = 'network';
-      if (attempt === 2) throw new ApiError("Can't reach the server. Check your internet and try again.", 'NETWORK');
+      if (attempt === attempts) throw new ApiError("Can't reach the server. Check your internet and try again.", 'NETWORK');
       await new Promise(r => setTimeout(r, 800));
       continue;
     }
@@ -47,13 +60,13 @@ async function api(action, ...args) {
         .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160);
       lastProblem = `HTTP ${res.status}${snippet ? ': ' + snippet : ''}`;
       console.warn('[api] unexpected reply', action, res.status, res.url, text.slice(0, 500));
-      if (attempt < 2) await new Promise(r => setTimeout(r, 800));
+      if (attempt < attempts) await new Promise(r => setTimeout(r, 800));
     }
   }
   if (!data) throw new ApiError(`The server sent an unexpected reply (${lastProblem}). Tap Try again; if it keeps happening, send this message to whoever set up the app.`, 'BAD_REPLY');
   if (!data.ok) {
     if (data.code === 'AUTH' && action !== 'login') { auth.clear(); showLogin(data.error); }
-    throw new ApiError(data.error || 'Something went wrong', data.code);
+    throw new ApiError(data.error || 'Something went wrong', data.code, data.data);
   }
   return data.result;
 }
@@ -717,7 +730,7 @@ function renderSettings() {
 /* =====================================================================
  * Bottom sheets
  * ===================================================================== */
-function openSheet({ title, count = '', body, foot = '', onClose }) {
+function openSheet({ title, count = '', body, foot = '', onClose, canDismiss }) {
   const root = $('#sheet-root');
   const back = document.createElement('div');
   back.className = 'sheet-backdrop';
@@ -743,6 +756,7 @@ function openSheet({ title, count = '', body, foot = '', onClose }) {
     foot: $('.sheet-foot', sh),
     close(reason) {
       if (closed) return;
+      if (reason === 'dismiss' && canDismiss && !canDismiss()) return;
       closed = true;
       back.classList.remove('is-open'); sh.classList.remove('is-open');
       setTimeout(() => { back.remove(); sh.remove(); if (!$('.sheet', root)) document.body.style.overflow = ''; }, 240);
@@ -810,6 +824,12 @@ function openEditor(initial = {}, opts = {}) {
     let result = 'cancel';
     let saving = false;
     let allowDuplicate = false;
+    // One id per card: if a save is sent twice (lost reply, second tap), the server updates the same row
+    const requestId = 'r_' + randomString();
+    // Set only from what the server says is really saved: 'ref' = same slip already saved, 'datetime' = possible duplicate
+    let dupState = slip && slip.duplicate ? { match: slip.duplicate.match || 'ref', tx: slip.duplicate } : null;
+    // True when a save was sent but we never heard back, so we don't know if it went through
+    let uncertain = false;
 
     const title = slip ? 'Check slip' : isEdit ? 'Edit' : (isFriend(f.type) ? 'Lend or borrow' : 'Add');
     const sheet = openSheet({
@@ -817,13 +837,16 @@ function openEditor(initial = {}, opts = {}) {
       count: slip && slip.total > 1 ? `${slip.index + 1} of ${slip.total}` : '',
       body: '',
       foot: '',
-      onClose: reason => resolve(reason === 'dismiss' && slip ? 'cancel' : result)
+      canDismiss: () => !saving,
+      onClose: reason => {
+        if (uncertain && result !== 'saved') resyncAfterUnknownSave(slip);
+        resolve(reason === 'dismiss' && slip ? 'cancel' : result);
+      }
     });
 
     function slipStrip() {
       if (!slip) return '';
       const d = slip.draft || {};
-      const dup = slip.duplicate;
       return `
         <div class="slip-strip">
           <img class="slip-thumb" src="${esc(slip.previewUrl)}" alt="Slip">
@@ -833,10 +856,20 @@ function openEditor(initial = {}, opts = {}) {
             Check the details below, then save.
           </div>
         </div>
-        ${dup ? `<div class="banner danger">⚠️ <span><b>Looks like a duplicate.</b> You already saved this slip on ${esc(dup.date)} (${money(dup.amount)}${dup.payee ? ', ' + esc(dup.payee) : ''}).</span></div>` : ''}
+        <div id="ed-dup">${dupBanner()}</div>
         ${slip.ocrError ? `<div class="banner warn">ℹ️ <span>Couldn't read the text on this slip, so please fill in the details yourself.${/Drive/.test(slip.ocrError) ? ' (Is the Drive API service turned on?)' : ''}</span></div>` :
           (!d.amount || !d.date) ? `<div class="banner warn">ℹ️ <span>Some details couldn't be read. Please fill in the empty ones.</span></div>` : ''}
         ${d.note ? `<div class="banner info">💡 <span>${esc(d.note)}</span></div>` : ''}`;
+    }
+
+    function dupBanner() {
+      if (!dupState || allowDuplicate) return '';
+      const t = dupState.tx || {};
+      const what = `${money(t.amount)}${t.payee ? ' to ' + esc(t.payee) : ''} on ${esc(t.date || '')}${t.time ? ' at ' + esc(t.time) : ''}`;
+      if (dupState.match === 'ref') {
+        return `<div class="banner danger">⚠️ <span><b>Already added.</b> This slip is already saved: ${what}. Skip it, or tap <b>Save anyway</b> if it really is a separate payment.</span></div>`;
+      }
+      return `<div class="banner warn">ℹ️ <span><b>Possible duplicate.</b> You already have ${what}. Check it isn't the same payment before saving.</span></div>`;
     }
 
     function typeSection() {
@@ -910,10 +943,26 @@ function openEditor(initial = {}, opts = {}) {
         <div id="ed-details">${detailsSection()}</div>
         <div id="ed-error"></div>`);
       sizeAmount($('#f-amount', sheet.body));
-      sheet.setFoot(slip
-        ? `<button class="btn" data-skip>Skip</button><button class="btn btn-primary" data-save>Save${slip.total > 1 && slip.index + 1 < slip.total ? ' & next' : ''}</button>`
-        : `${isEdit ? '' : ''}<button class="btn btn-primary" data-save>${isEdit ? 'Save changes' : 'Save'}</button>`);
+      renderFoot();
+    }
+
+    function footHtml() {
+      const next = slip && slip.total > 1 && slip.index + 1 < slip.total ? ' & next' : '';
+      if (slip && dupState && dupState.match === 'ref' && !allowDuplicate) {
+        return `<button class="btn" data-save data-anyway>Save anyway</button><button class="btn btn-primary" data-skip>Skip${next}</button>`;
+      }
+      if (slip) return `<button class="btn" data-skip>Skip</button><button class="btn btn-primary" data-save>Save${next}</button>`;
+      return `<button class="btn btn-primary" data-save>${isEdit ? 'Save changes' : 'Save'}</button>`;
+    }
+    function renderFoot() {
+      sheet.setFoot(footHtml());
       wireFoot();
+    }
+    /** While saving, every button in the footer is locked and the sheet can't be closed. */
+    function setBusy(on) {
+      $$('button', sheet.foot).forEach(b => { b.disabled = on; });
+      const save = $('[data-save]', sheet.foot);
+      if (on && save) save.textContent = 'Saving…';
     }
     function redrawPart() {
       $('#ed-type', sheet.body).innerHTML = typeSection();
@@ -922,9 +971,12 @@ function openEditor(initial = {}, opts = {}) {
 
     function wireFoot() {
       const save = $('[data-save]', sheet.foot);
-      save.addEventListener('click', onSave);
+      save.addEventListener('click', () => {
+        if (save.hasAttribute('data-anyway')) allowDuplicate = true;
+        onSave();
+      });
       const skip = $('[data-skip]', sheet.foot);
-      if (skip) skip.addEventListener('click', () => { result = 'skipped'; sheet.close('skip'); });
+      if (skip) skip.addEventListener('click', () => { if (saving) return; result = 'skipped'; sheet.close('skip'); });
     }
 
     sheet.body.addEventListener('input', e => {
@@ -977,7 +1029,6 @@ function openEditor(initial = {}, opts = {}) {
       }
       const pp = e.target.closest('[data-pick-person]');
       if (pp) { f.person = pp.dataset.pickPerson; const inp = $('#f-person', sheet.body); inp.value = f.person; inp.classList.remove('is-invalid'); return; }
-      if (e.target.closest('[data-allow-dup]')) { allowDuplicate = true; onSave(); }
     });
 
     function fail(msg, focusSel) {
@@ -991,49 +1042,86 @@ function openEditor(initial = {}, opts = {}) {
     async function onSave() {
       if (saving) return;
       $('#ed-error', sheet.body).innerHTML = '';
+      const dupBox = $('#ed-dup', sheet.body);
+      if (dupBox) dupBox.innerHTML = dupBanner();
       const amount = Number(String(f.amount).replace(/,/g, ''));
       if (!(amount > 0)) return fail('Enter an amount.', '#f-amount');
       if (isFriend(f.type) && !f.person.trim()) return fail('Which friend is this?', '#f-person');
       if (!/^\d{4}-\d{2}-\d{2}$/.test(f.date)) return fail('Pick a date.', '#f-date');
 
       saving = true;
-      const btn = $('[data-save]', sheet.foot);
-      const btnText = btn.textContent;
-      btn.disabled = true; btn.textContent = 'Saving…';
+      setBusy(true);
       try {
         const payload = {
           id: f.id, type: f.type, amount, category: f.category, payee: f.payee.trim(), person: f.person.trim(),
           note: f.note.trim(), date: f.date, time: f.time, account: f.account, method: f.method,
           source: slip ? 'slip' : (initial.source || 'manual'), slip_ref: f.slip_ref,
-          slipFileId: slip ? slip.fileId : '', allowDuplicate: allowDuplicate || !!(slip && slip.duplicate && slip.confirmedDuplicate)
+          slipFileId: slip ? slip.fileId : '', requestId, allowDuplicate
         };
         const saved = await api('saveTransaction', payload);
-        const list = S.data.transactions;
-        const i = list.findIndex(t => t.id === saved.id);
-        if (i >= 0) list[i] = saved; else list.push(saved);
+        // Confirmed by the server: show it straight away
+        upsertTx(saved);
         learnLocally(saved);
         if (f.account) store.set('lastAccount', f.account);
+        uncertain = false;
         result = 'saved';
-        if (!slip) S.month = monthOf(saved.date) <= thisMonth() ? monthOf(saved.date) : S.month;
+        saving = false;
+        // Show the month the transaction belongs to, so it's visible straight away
+        if (monthOf(saved.date) <= thisMonth()) S.month = monthOf(saved.date);
         toast(isEdit ? 'Changes saved' : `Saved ${money(saved.amount)}`);
         sheet.close('saved');
         render();
       } catch (err) {
-        const msg = err.message || String(err);
-        if (/^DUPLICATE/.test(msg)) {
-          $('#ed-error', sheet.body).innerHTML = `<div class="banner danger"><span>${esc(msg.replace(/^DUPLICATE:\s*/, ''))}<br><button class="btn btn-sm btn-danger" data-allow-dup style="margin-top:8px">Save anyway</button></span></div>`;
-        } else {
-          fail(esc(msg));
-        }
-        btn.disabled = false; btn.textContent = btnText;
-      } finally {
         saving = false;
+        if (err.code === 'DUPLICATE') {
+          // The server found this slip already saved. Show that saved transaction in the app too.
+          dupState = { match: 'ref', tx: err.data || {} };
+          allowDuplicate = false;
+          if (err.data && err.data.id) { upsertTx(err.data); render(); }
+          const box = $('#ed-dup', sheet.body);
+          if (box) box.innerHTML = dupBanner(); else fail(esc(err.message));
+          box && box.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+          renderFoot();
+        } else if (isUnknownOutcome(err)) {
+          uncertain = true;
+          renderFoot();
+          fail(`<span><b>Not sure it saved.</b> ${esc(err.message)} Tap <b>Save</b> again: it won't be added twice.</span>`);
+        } else {
+          renderFoot();
+          fail(esc(err.message));
+        }
       }
     }
 
     draw();
     if (!slip && !isEdit && f.amount === '') setTimeout(() => { const a = $('#f-amount', sheet.body); if (a) a.focus(); }, 280);
   });
+}
+
+function upsertTx(t) {
+  const list = S.data.transactions;
+  const i = list.findIndex(x => x.id === t.id);
+  if (i >= 0) list[i] = t; else list.push(t);
+}
+
+function slipFileIdOf(url) {
+  const m = String(url || '').match(/\/d\/([A-Za-z0-9_-]{20,})/);
+  return m ? m[1] : '';
+}
+
+/**
+ * A save was sent but we never got the answer, and the card was then closed.
+ * Reload from the server so the app shows exactly what is stored.
+ */
+async function resyncAfterUnknownSave(slip) {
+  try {
+    const data = await api('getAppData');
+    S.data = data;
+    render();
+    if (slip && data.transactions.some(t => slipFileIdOf(t.slip_url) === slip.fileId)) {
+      toast('That slip did get saved. It is in your list.');
+    }
+  } catch (e) { /* keep showing what we have */ }
 }
 
 /* =====================================================================
@@ -1192,7 +1280,7 @@ async function startSlipFlow(files) {
       method: d.method,
       note: d.note,
       slip_ref: d.ref
-    }, { slip: { ...res, draft: d, index: i, total: files.length, confirmedDuplicate: !!res.duplicate } });
+    }, { slip: { ...res, draft: d, index: i, total: files.length } });
 
     if (outcome === 'saved') saved++;
     else {

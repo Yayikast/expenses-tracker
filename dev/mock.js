@@ -44,11 +44,21 @@
     if (fn === 'getAppData') return appData();
     if (fn === 'saveTransaction') {
       const t = { ...args[0] };
-      if (t.source === 'slip' && t.slip_ref && !t.allowDuplicate && db.transactions.some(x => x.slip_ref && (x.slip_ref.includes(t.slip_ref) || t.slip_ref.includes(x.slip_ref))))
-        throw new Error('DUPLICATE: this slip is already saved.');
+      const norm = r => String(r || '').replace(/\s/g, '').toUpperCase();
+      const usable = r => norm(r).length >= 10 && (norm(r).match(/\d/g) || []).length >= 6;
+      const same = (a, b) => { a = norm(a); b = norm(b); if (a === b) return true; const s2 = a.length < b.length ? a : b, l = a.length < b.length ? b : a; return s2.length >= 16 && l.indexOf(s2) === 0; };
+      // same review card sent again -> same row
+      const earlier = !t.id && ((t.requestId && db.transactions.find(x => x._req === t.requestId)) ||
+        (t.slipFileId && db.transactions.find(x => String(x.slip_url).includes('/d/' + t.slipFileId))));
+      if (earlier) t.id = earlier.id;
+      if (!t.id && t.source === 'slip' && usable(t.slip_ref) && !t.allowDuplicate) {
+        const ex = db.transactions.find(x => usable(x.slip_ref) && same(x.slip_ref, t.slip_ref));
+        if (ex) { const e = new Error('This slip is already saved (' + ex.date + ', ฿' + ex.amount + ').'); e.code = 'DUPLICATE'; e.data = JSON.parse(JSON.stringify(ex)); throw e; }
+      }
       if (!t.id) t.id = 't_new' + (++n);
       t.slip_url = t.slipFileId ? 'https://drive.google.com/file/d/' + t.slipFileId + 'xxxxxxxxxxxxxxxxxxxx/view' : (db.transactions.find(x => x.id === t.id) || {}).slip_url || '';
-      delete t.slipFileId; delete t.allowDuplicate;
+      t._req = t.requestId;
+      delete t.slipFileId; delete t.allowDuplicate; delete t.requestId;
       t.created_at = t.created_at || '2026-10-03 15:00:00';
       if (!['expense', 'income'].includes(t.type)) t.category = '';
       const i = db.transactions.findIndex(x => x.id === t.id);
@@ -67,7 +77,9 @@
       draft.category = guessCategory(draft.payee, draft.categoryHint, db.rules);
       const acc = db.accounts.find(a => a.name.toLowerCase() === String(draft.bank).toLowerCase());
       draft.account = acc ? acc.name : ''; draft.method = acc ? acc.default_method : 'PromptPay';
-      const dup = draft.ref && db.transactions.find(x => x.slip_ref && (x.slip_ref.includes(draft.ref) || draft.ref.includes(x.slip_ref)));
+      const nr = r => String(r || '').replace(/\s/g, '').toUpperCase();
+      const dupTx = draft.ref && db.transactions.find(x => x.slip_ref && (nr(x.slip_ref) === nr(draft.ref) || nr(x.slip_ref).startsWith(nr(draft.ref)) || nr(draft.ref).startsWith(nr(x.slip_ref))));
+      const dup = dupTx ? { match: 'ref', ...dupTx } : null;
       window.__lastPreview = 'data:image/jpeg;base64,' + p.base64;
       return { fileId: 'file' + (++n), draft, duplicate: dup || null, ocrError: '', _qr: p.qrText };
     }
