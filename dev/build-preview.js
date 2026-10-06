@@ -14,9 +14,9 @@ const mock = [read(...configFile.split('/')), read('src', 'parsers.gs')].map(c =
   `<script>window.__fixtures=${JSON.stringify(fixtures)}</script><script>${read('dev', 'mock.js')}</script>`;
 
 html = html
-  .replace('<link rel="stylesheet" href="styles.css?v=8">', () => `<style>${read('docs', 'styles.css')}</style>`)
-  .replace('<script src="config.js?v=8"></script>', () => mock)
-  .replace('<script src="app.js?v=8"></script>', () => `<script>${read('docs', 'app.js')}</script>`)
+  .replace('<link rel="stylesheet" href="styles.css?v=9">', () => `<style>${read('docs', 'styles.css')}</style>`)
+  .replace('<script src="config.js?v=9"></script>', () => mock)
+  .replace('<script src="app.js?v=9"></script>', () => `<script>${read('docs', 'app.js')}</script>`)
   .replace(/(src|href)="(icon[^"]*)"/g, (m, a, f) => `${a}="../../docs/${f}"`);
 if (process.argv.includes('--local-libs')) {
   // offline preview: put the two libraries in the page so app.js finds them already loaded

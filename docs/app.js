@@ -158,6 +158,24 @@ const store = {
   set(k, v) { try { localStorage.setItem('et_' + k, JSON.stringify(v)); } catch (e) { /* ignore */ } }
 };
 
+/* ---------- Light / Dark / System (saved on this device only) ---------- */
+const THEMES = ['system', 'light', 'dark'];
+function getTheme() { const t = store.get('theme', 'system'); return THEMES.includes(t) ? t : 'system'; }
+function applyTheme(t) {
+  const root = document.documentElement;
+  if (t === 'light' || t === 'dark') root.dataset.theme = t; else delete root.dataset.theme;
+  // Phone status bar color follows the choice too
+  $$('meta[name="theme-color"]').forEach(m => {
+    if (!m.dataset.orig) m.dataset.orig = m.content;
+    m.content = t === 'light' ? '#F5F4F0' : t === 'dark' ? '#111112' : m.dataset.orig;
+  });
+}
+function setTheme(t) {
+  store.set('theme', t);
+  applyTheme(t);
+  render();   // charts and icons read colors when drawn, so redraw the screen
+}
+
 /* ---------- Libraries, loaded only when needed ---------- */
 const CHART_URL = 'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js';
 const JSQR_URL = 'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js';
@@ -420,6 +438,8 @@ function monthTotals(key) {
   return { spent, income, byCat };
 }
 
+const CAT_TOP = 5;
+let catsOpen = false;   // "Where it went": showing all categories?
 function renderHome() {
   const el = $('#view-home');
   const key = S.month;
@@ -457,7 +477,7 @@ function renderHome() {
       </div>
       <div class="bar"><i style="width:${barW}%;background:${barColor}"></i></div>${note}
     </li>`;
-  }).join('');
+  });
 
   // Budgeted categories with no spending yet this month
   const unspentBudgets = cats.filter(c => Number(c.budget) > 0 && !cur.byCat.has(c.name)).map(c => `
@@ -468,7 +488,9 @@ function renderHome() {
       </div>
       <div class="bar"><i style="width:0"></i></div>
       <div class="budget-note">${money(0)} of ${money(c.budget)} budget</div>
-    </li>`).join('');
+    </li>`);
+  // Biggest 5 first; the rest are tucked behind "View more"
+  const catItems = catRows.concat(unspentBudgets).map((li, i) => i < CAT_TOP ? li : li.replace('<li class="cat-row">', '<li class="cat-row cat-extra">'));
 
   const friendsCard = (fb.owesYou > 0 || fb.youOwe > 0) ? `
     <button class="card friends-mini" data-go="friends">
@@ -512,7 +534,7 @@ function renderHome() {
         </div>
       </div>` : ''}
 
-    ${cur.spent > 0 || unspentBudgets ? `
+    ${cur.spent > 0 || unspentBudgets.length ? `
     <div class="card">
       <h3>Where it went</h3>
       ${cur.spent > 0 ? `
@@ -520,7 +542,8 @@ function renderHome() {
         <canvas id="donut"></canvas>
         <div class="donut-center"><div><b class="num">${money(cur.spent)}</b><span>${cur.byCat.size} ${cur.byCat.size === 1 ? 'category' : 'categories'}</span></div></div>
       </div>` : ''}
-      <ul class="cat-list">${catRows}${unspentBudgets}</ul>
+      <ul class="cat-list ${catsOpen ? 'is-open' : ''}">${catItems.join('')}</ul>
+      ${catItems.length > CAT_TOP ? `<button class="more-btn" data-act="cats-more">${catsOpen ? 'Show less' : `View more (${catItems.length - CAT_TOP})`}</button>` : ''}
     </div>` : ''}
 
     <div class="card">
@@ -800,6 +823,12 @@ function renderSettings() {
 
   el.innerHTML = `
     <h1 class="page-title">Settings</h1>
+    <div class="card">
+      <div class="set-section-title">Appearance</div>
+      <div class="segmented" role="radiogroup" aria-label="Appearance" style="margin-bottom:0">
+        ${[['system', 'System'], ['light', 'Light'], ['dark', 'Dark']].map(([v, l]) => `<button role="radio" aria-checked="${getTheme() === v}" class="${getTheme() === v ? 'is-on' : ''}" data-theme-pick="${v}">${l}</button>`).join('')}
+      </div>
+    </div>
     <div class="card">
       <div class="set-section-title">Expense categories · monthly budget</div>
       ${d.categories.map((c, i) => c.type === 'expense' ? catRow(c, i) : '').join('')}
@@ -1550,6 +1579,13 @@ function wireEvents() {
       if (act === 'friend-new') return openEditor({ type: 'lend' });
       if (act === 'see-month') { S.hist = { q: '', type: 'all', month: S.month, cat: '' }; return go('history'); }
       if (act === 'more') { histLimit += 150; return renderHistory(); }
+      if (act === 'cats-more') {
+        catsOpen = !catsOpen;
+        a.previousElementSibling.classList.toggle('is-open', catsOpen);
+        const extra = $$('.cat-extra', a.parentElement).length;
+        a.textContent = catsOpen ? 'Show less' : `View more (${extra})`;
+        return;
+      }
       if (act === 'save-settings') return saveSettingsNow(a);
       if (act === 'reload') return location.reload();
       if (act === 'logout' || act === 'logout-all') return signOut(act === 'logout-all', a);
@@ -1559,6 +1595,8 @@ function wireEvents() {
     if (ht) { S.hist.type = ht.dataset.htype; histLimit = 150; return renderHistory(); }
 
     // Settings
+    const th = e.target.closest('[data-theme-pick]');
+    if (th) return setTheme(th.dataset.themePick);
     const ct = e.target.closest('[data-cat-toggle]');
     if (ct) { const c = draftSettings.categories[+ct.dataset.catToggle]; c.archived = !c.archived; draftSettings.dirty = true; return renderSettings(); }
     const at = e.target.closest('[data-acc-toggle]');
@@ -1644,6 +1682,11 @@ async function saveSettingsNow(btn) {
  * Start
  * ===================================================================== */
 async function boot() {
+  applyTheme(getTheme());
+  try {
+    // When set to System, redraw if the phone switches between light and dark
+    matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (getTheme() === 'system') render(); });
+  } catch (e) { /* older browsers */ }
   wireEvents();
   if (!window.__mockApi) {
     if (!CFG.API_URL || !CFG.GOOGLE_CLIENT_ID || /PASTE/.test(CFG.API_URL + CFG.GOOGLE_CLIENT_ID)) {

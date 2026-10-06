@@ -78,14 +78,14 @@ On GitHub: repo **Settings → Pages → Build and deployment**: Source **Deploy
 
 | Screen | What it does |
 |---|---|
-| **Home** | Month picker, total spent / income / left over, change vs last month, spending by category (with budget bars), spending per month chart (tap a bar to jump to that month), recent items |
+| **Home** | Month picker, total spent / income / left over, change vs last month, spending by category (top 5, then **View more**, with budget bars), spending per month chart (tap a bar to jump to that month), recent items |
 | **+ → Scan slips** | Pick one or more slips. Each one is read, then shown on a review card. Check it and tap **Save & next**, or **Skip** |
 | **+ → Add manually** | For cash, income or anything without a slip |
 | **Split a bill** | On any expense, tap more than one category. Each one gets its own amount box, with the remaining amount shown underneath. Save unlocks once the parts add up exactly to the total. Tap a category again to remove it. |
 | **+ → Lend or borrow** | "I lent", "They paid back", "I borrowed", "I paid back" |
 | **History** | Search, filter by month / category / type, then tap an item to view the slip, edit or delete it |
 | **Friends** | One balance per friend, netted: if you borrowed ฿50 from Matt and he borrowed ฿20 from you, it shows **You owe ฿30**; equal amounts show **Settled — ฿0**. Tap a friend to see every original lend/borrow record, then **They paid back** or **I paid back** to fill in the remaining amount for you |
-| **Settings** | Rename or hide categories, set monthly budgets, manage accounts, links to your Sheet and slips folder, sign out (this device or all devices) |
+| **Settings** | Appearance (System / Light / Dark, saved per device), rename or hide categories, set monthly budgets, manage accounts, links to your Sheet and slips folder, sign out (this device or all devices) |
 
 **Category guessing:** every time you save a payee with a category, the app remembers it (`PayeeRules` tab), so the next slip from the same shop is categorised automatically.
 

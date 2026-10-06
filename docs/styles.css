@@ -24,8 +24,9 @@
   --safe-b: env(safe-area-inset-bottom, 0px);
   color-scheme: light;
 }
+/* Dark colors: used when the phone is in dark mode (unless Light is picked in Settings), or when Dark is picked */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #111112;
     --card: #1C1C1E;
     --card-2: #26262A;
@@ -48,6 +49,29 @@
     --shadow: none;
     color-scheme: dark;
   }
+}
+:root[data-theme="dark"] {
+  --bg: #111112;
+  --card: #1C1C1E;
+  --card-2: #26262A;
+  --text: #F2F2F4;
+  --muted: #A0A0A6;
+  --faint: #6C6C72;
+  --line: #2E2E33;
+  --accent: #2BB596;
+  --accent-soft: #143A31;
+  --accent-text: #0B1F1A;
+  --income: #51CF66;
+  --lend: #FFA94D;
+  --borrow: #B197FC;
+  --owed-me: #51CF66;
+  --i-owe: #FF6B6B;
+  --danger: #F06595;
+  --danger-soft: #3A1622;
+  --warn-soft: #3A2E10;
+  --warn-text: #FFD43B;
+  --shadow: none;
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -225,6 +249,8 @@ select.input { background-image: linear-gradient(45deg, transparent 50%, var(--f
 
 .segmented { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; background: var(--card-2); border-radius: 12px; padding: 3px; margin-bottom: 12px; }
 .segmented button { height: 36px; border-radius: 9px; font-size: 14px; font-weight: 500; color: var(--muted); }
+.cat-list:not(.is-open) .cat-extra { display: none; }
+.more-btn { display: block; width: 100%; margin-top: 4px; padding: 10px 0 2px; color: var(--accent); font-size: 14px; font-weight: 600; text-align: center; }
 .segmented button.is-on { background: var(--card); color: var(--text); box-shadow: var(--shadow); font-weight: 600; }
 
 .sub-chips { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px; }
