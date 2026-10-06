@@ -82,6 +82,11 @@ function normalizeText_(text) {
   return String(text || '')
     // Thai digits -> Arabic digits
     .replace(/[๐-๙]/g, function (d) { return String(d.charCodeAt(0) - 0x0E50); })
+    // OCR often writes ำ as two characters (ํ + า) and แ as two เ: join them back
+    .replace(/\u0E4D\u0E32/g, '\u0E33')
+    .replace(/\u0E40\u0E40/g, '\u0E41')
+    // invisible zero-width characters
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
     .replace(/\r/g, '')
     .replace(/[ \t ]+/g, ' ');
 }
@@ -187,30 +192,76 @@ function isAmountLine_(line) {
   return /^-?[\d,]+(\.\d{1,2})?\s*(THB|บาท|฿|[A-Za-z]{2,4})?\.?$/.test(line.trim());
 }
 
+/** A label like "จำนวนเงินที่ชำระ" still matches if OCR put spaces inside it. */
+function labelRegex_(label) {
+  var chars = String(label).replace(/\s/g, '').split('').map(function (c) { return c.replace(/[.*+?^${}()|[\]\\\/]/g, '\\$&'); });
+  return new RegExp(chars.join('\\s*'), 'i');
+}
+
 /**
- * Looks for a label (e.g. "Amount") and returns the number on the same line,
- * or on one of the next few lines when OCR splits label and value.
+ * Looks for a label (e.g. "Amount") and returns its number.
+ *
+ * Handles the ways OCR lays out a two-column slip:
+ *   same line       "จำนวนเงินที่ชำระ 96.20 บาท"
+ *   value below     "Amount" / "276.00 THB"
+ *   all labels first, then all values (common for Google Drive OCR):
+ *       ค่าสินค้า/บริการ        <- label 1
+ *       สิทธิไทยช่วยไทยพลัส      <- label 2
+ *       จำนวนเงินที่ชำระ        <- label 3  (the one we want)
+ *       189 บาท                <- value 1
+ *       -92.80 บาท             <- value 2
+ *       96.20 บาท              <- value 3  (so we must take THIS one, not the first)
+ *     The label's position among its neighbouring labels picks the matching value.
+ *
+ * opts.allowFee: the label itself is a fee/discount label (normally skipped)
+ * opts.signed:   return the size of a negative amount too (for discounts)
  */
-function amountAfterLabel_(lines, labels) {
+function amountAfterLabel_(lines, labels, opts) {
+  opts = opts || {};
+  var wanted = function (n) { return opts.signed ? n !== 0 : n > 0; };
   for (var i = 0; i < lines.length; i++) {
     var line = lines[i];
     for (var k = 0; k < labels.length; k++) {
-      var idx = line.toLowerCase().indexOf(labels[k].toLowerCase());
-      if (idx === -1) continue;
-      var rest = line.substr(idx + labels[k].length);
-      if (FEE_RE_.test(line.substr(0, idx + labels[k].length)) && !/จำนวนเงิน|amount/i.test(labels[k])) continue;
-      var nums = numbersIn_(rest).filter(function (n) { return n > 0; });
-      if (nums.length) return nums[0];
-      for (var j = i + 1; j < Math.min(lines.length, i + 4); j++) {
-        if (FEE_RE_.test(lines[j])) continue;
-        if (isAmountLine_(lines[j])) {
-          var n2 = numbersIn_(lines[j]);
-          if (n2.length && n2[0] > 0) return n2[0];
-        }
-      }
+      var m = line.match(labelRegex_(labels[k]));
+      if (!m) continue;
+      var before = line.substr(0, m.index + m[0].length);
+      if (!opts.allowFee && FEE_RE_.test(before) && !/จำนวนเงิน|amount/i.test(labels[k])) continue;
+
+      // 1. Number on the same line
+      var nums = numbersIn_(line.substr(m.index + m[0].length)).filter(wanted);
+      if (nums.length) return Math.abs(nums[0]);
+
+      // 2. Number(s) below. Count labels right before/after ours and the values that follow.
+      var after = 0, j = i + 1;
+      while (j < lines.length && !isAmountLine_(lines[j]) && after < 6) { after++; j++; }
+      var values = [];
+      while (j < lines.length && isAmountLine_(lines[j])) { values.push(numbersIn_(lines[j])[0]); j++; }
+      if (!values.length) continue;
+      var labelsBefore = 0;
+      for (var b = i - 1; b >= 0 && !isAmountLine_(lines[b]); b--) labelsBefore++;
+      var total = labelsBefore + after + 1;
+      var pick;
+      if (values.length === total) pick = labelsBefore;                 // one value per label
+      else if (values.length < total) pick = values.length - 1 - after;  // extra text lines above the labels
+      else pick = labelsBefore;                                          // extra values below
+      if (after === 0 && labelsBefore === 0) pick = 0;
+      if (pick < 0 || pick >= values.length) pick = 0;
+      var v = values[pick];
+      if (v !== undefined && v !== null && wanted(v)) return Math.abs(v);
+      for (var q = 0; q < values.length; q++) if (wanted(values[q])) return Math.abs(values[q]);
     }
   }
   return null;
+}
+
+/** Fallback for slips where the total is printed last: the bottom-most amount with a currency word. */
+function lastCurrencyAmount_(lines) {
+  var last = null;
+  lines.forEach(function (line) {
+    if (FEE_RE_.test(line) || !CURRENCY_RE_.test(line)) return;
+    numbersIn_(line).forEach(function (n) { if (n > 0) last = n; });
+  });
+  return last;
 }
 
 /** Fallback: largest number that has a currency word next to it, skipping fee lines. */
@@ -319,8 +370,34 @@ var SLIP_PARSERS = {
     };
   },
   'Paotang': function (lines, text) {
+    // Paotang shows: price (ค่าสินค้า/บริการ) at the top, any discount/co-pay (สิทธิ... -xx) and
+    // the amount actually paid (จำนวนเงินที่ชำระ) at the bottom. We always want the amount paid.
+    var paid = amountAfterLabel_(lines, ['จำนวนเงินที่ชำระ', 'ยอดเงินที่ชำระ', 'ยอดชำระ', 'ชำระทั้งสิ้น']);
+    var full = amountAfterLabel_(lines, ['ค่าสินค้า/บริการ', 'ค่าสินค้า', 'ราคา']);
+    var discount = amountAfterLabel_(lines, ['สิทธิ', 'ส่วนลด', 'คูปอง'], { allowFee: true, signed: true });
+    if (!discount) {
+      // Label unreadable? A negative amount on the slip is the discount.
+      lines.forEach(function (l) { if (!discount && CURRENCY_RE_.test(l)) numbersIn_(l).forEach(function (n) { if (n < 0) discount = -n; }); });
+    }
+    if (paid === null) paid = lastCurrencyAmount_(lines);   // the paid amount is printed last
+    if (full === null && discount) {
+      // price is the first amount on the slip
+      for (var f = 0; f < lines.length && full === null; f++) {
+        if (CURRENCY_RE_.test(lines[f])) { var fn = numbersIn_(lines[f]).filter(function (n) { return n > 0; }); if (fn.length) full = fn[0]; }
+      }
+    }
+    // Check with the slip's own sum: price - discount = paid
+    if (full && discount && full > discount) {
+      var expected = Math.round((full - discount) * 100) / 100;
+      if (paid === null || Math.abs(paid - full) < 0.005) paid = expected;
+    }
+    // Government co-pay slips (ไทยช่วยไทย 60/40, คนละครึ่ง...): you never pay the full price.
+    // If only the full price could be read, leave the amount empty so you type it in,
+    // rather than guessing (the government share is not always exactly 60%).
+    var coPay = /สิทธิ|ไทยช่วยไทย|คนละครึ่ง|60\s*\/\s*40|40\s*\/\s*60/.test(text);
+    if (coPay && !discount && full && paid !== null && Math.abs(paid - full) < 0.005) paid = '';
     var out = {
-      amount: amountAfterLabel_(lines, ['จำนวนเงินที่ชำระ', 'ยอดเงินที่ชำระ', 'ยอดชำระ', 'จำนวนเงิน']),
+      amount: paid,
       payee: '',
       ref: '',
       categoryHint: '',
@@ -348,8 +425,7 @@ var SLIP_PARSERS = {
     if (uuid) out.ref = uuid[0].toLowerCase().replace(/o/g, '0');
 
     // Co-payment schemes (e.g. ไทยช่วยไทยพลัส): keep full price and subsidy in the note
-    var full = amountAfterLabel_(lines, ['ค่าสินค้า/บริการ', 'ค่าสินค้า']);
-    var subsidyLine = lines.filter(function (l) { return /สิทธิ|ส่วนลด/.test(l); })[0];
+    var subsidyLine = lines.filter(function (l) { return /สิทธิ|ส่วนลด|คูปอง/.test(l); })[0];
     if (full && out.amount && full > out.amount) {
       var subsidy = Math.round((full - out.amount) * 100) / 100;
       var scheme = subsidyLine ? subsidyLine.replace(/-?[\d,.]+\s*(บาท)?\s*$/, '').trim() : 'discount';
@@ -379,6 +455,7 @@ function parseSlipText(ocrText, qrInfo) {
   var r = parser(lines, text) || {};
 
   var amount = r.amount;
+  // '' means the bank parser decided it can't tell: leave it for you to fill in
   if (amount === null || amount === undefined) amount = largestCurrencyAmount_(lines);
 
   var ref = (qrInfo && qrInfo.ref) ? qrInfo.ref : String(r.ref || '').replace(/\s/g, '');
@@ -387,7 +464,7 @@ function parseSlipText(ocrText, qrInfo) {
     bank: bank,
     date: findDate_(text),
     time: findTime_(text),
-    amount: amount === null || amount === undefined ? '' : Math.round(amount * 100) / 100,
+    amount: amount === null || amount === undefined || amount === '' ? '' : Math.round(amount * 100) / 100,
     payee: r.payee || '',
     ref: ref,
     refSource: (qrInfo && qrInfo.ref) ? 'qr' : (ref ? 'text' : ''),

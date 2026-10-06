@@ -86,6 +86,19 @@ ctx.Drive.Files.create = () => { throw new Error('Drive is not defined'); };
 const r4 = run('readSlip_(payload2)');
 check('OCR failure handled', r4.ocrError && r4.fileId && r4.draft.amount === '', r4);
 
+// ---------- Paotang: the amount paid (bottom) is what gets saved ----------
+ctx.Drive.Files.create = () => ({ id: server.folders.ROOT.createFile().id });   // OCR working again (an earlier test broke it on purpose)
+server.setOcr(fs.readFileSync(path.join(__dirname, 'fixtures', 'paotang.columns.txt'), 'utf8'));
+ctx.paoPayload = { base64: 'x', qrText: '' };
+const pao = run('readSlip_(paoPayload)');
+check('Paotang slip: draft amount is the amount paid', pao.draft.amount === 96.2, pao.draft.amount);
+ctx.paoSave = { type: 'expense', amount: pao.draft.amount, date: pao.draft.date, time: pao.draft.time, payee: pao.draft.payee,
+  category: pao.draft.category, account: pao.draft.account, note: pao.draft.note, source: 'slip', slip_ref: pao.draft.ref, slipFileId: pao.fileId, requestId: 'card-PAO' };
+const paoSaved = run('saveTransaction_(paoSave)');
+const paoRow = run('readTable_("transactions")').find(t => t.id === paoSaved.id);
+check('Paotang slip: the Sheet row holds the amount paid', paoRow && paoRow.amount === 96.2 && paoRow.account === 'Paotang', paoRow);
+run('deleteTransaction_("' + paoSaved.id + '")');
+
 // ---------- Saving: retries, duplicates, edits ----------
 const count = () => run('readTable_("transactions")').length;
 

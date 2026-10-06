@@ -17,6 +17,12 @@ const cases = [
   ['bangkok thai', fx('bangkok.thai.txt'), null, {...BBL, ref:'2026090615434424004302908'}],
   ['paotang drive', fx('paotang.drive.txt'), null, PAO],
   ['paotang inline + thai digits + O/0', fx('paotang.inline.txt'), null, PAO],
+  // Paotang: must take the amount PAID (bottom), never the price at the top
+  ['paotang labels first, numbers after', fx('paotang.columns.txt'), null, PAO],
+  ['paotang ำ split in two + spaces + lost minus', fx('paotang.decomposed.txt'), null, PAO],
+  ['paotang unreadable Thai labels (real OCR, no date line)', fx('paotang.garbled.txt'), null, { ...PAO, date: '', time: '' }],
+  ['paotang without a discount', fx('paotang.nodiscount.txt'), null, { bank: 'Paotang', date: '2026-10-03', time: '12:05', amount: 50, payee: 'ร้านป้าแดง' }],
+  ['paotang 60/40 where only the full price is readable -> blank, not 189', fx('paotang.unclear.txt'), null, { bank: 'Paotang', amount: '', payee: '2sis Acai & Klongluang' }],
 ];
 let fail = 0;
 for (const [name, text, qr, exp] of cases) {
@@ -25,6 +31,12 @@ for (const [name, text, qr, exp] of cases) {
   if (bad.length) { fail++; console.log('FAIL', name, bad.map(k => `${k}: got ${JSON.stringify(r[k])} want ${JSON.stringify(exp[k])}`).join(' | ')); }
   else console.log('ok  ', name, r.note ? '| note: ' + r.note : '', r.categoryHint ? '| hint: ' + r.categoryHint : '');
 }
+// Paotang note keeps the price and discount
+for (const f of ['paotang.drive.txt', 'paotang.columns.txt', 'paotang.decomposed.txt']) {
+  const r = P.parseSlipText(fx(f), null);
+  if (!/Full price 189\.00/.test(r.note) || !/-92\.80/.test(r.note)) { fail++; console.log('FAIL note', f, r.note); }
+}
+if (P.parseSlipText(fx('paotang.nodiscount.txt'), null).note) { fail++; console.log('FAIL nodiscount note'); }
 // QR
 const q = P.parseSlipQr(QR_KSA);
 if (q.bankCode !== '025' || q.bank !== 'Krungsri') { fail++; console.log('FAIL qr', q); } else console.log('ok   qr parse');
