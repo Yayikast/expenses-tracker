@@ -348,10 +348,61 @@ function valueAfterLabel_(lines, labelRe, valueRe) {
 function detectBank(text, qrInfo) {
   if (qrInfo && qrInfo.bank) return qrInfo.bank;
   var t = normalizeText_(text).toLowerCase();
-  if (/เป๋าตัง|paotang|g-?wallet/.test(t)) return 'Paotang';
+  if (/เป๋าตัง|paotang|g[\W_]{0,3}wallet|wallet\s*id|ไทยช่วยไทย|คนละครึ่ง/.test(t)) return 'Paotang';
+  // The logo text is often not read, but Paotang's reference number has its own look (32 letters/digits, 0-9 a-f)
+  if (paotangRef_(t)) return 'Paotang';
   if (/krungsri|กรุงศรี|\bksa\d/.test(t)) return 'Krungsri';
   if (/bangkok bank|ธนาคารกรุงเทพ|bualuang|บัวหลวง/.test(t)) return 'Bangkok Bank';
   return '';
+}
+
+/**
+ * Paotang reference: 32 hex characters, either plain (45af92adbd0e4b209c7dcec8b75d8587, newer slips)
+ * or with dashes (dc6230a7-9828-4e70-b148-a095d7d6c9e3, older slips). OCR sometimes reads 0 as O.
+ */
+function paotangRef_(text) {
+  var m = String(text).match(/(?:^|[^0-9a-z])([0-9a-fo]{8}-?[0-9a-fo]{4}-?[0-9a-fo]{4}-?[0-9a-fo]{4}-?[0-9a-fo]{12})(?![0-9a-z])/i);
+  if (!m) return '';
+  var ref = m[1].toLowerCase().replace(/o/g, '0');
+  return /[a-f]/.test(ref) && /\d/.test(ref) ? ref : '';   // must mix letters and digits, so it isn't an ordinary word
+}
+
+/**
+ * Money amounts on a Paotang slip, top to bottom, skipping lines that hold other numbers
+ * (date and time, wallet ID, reference, the "60/40" logo). Works even when the labels and "บาท" are unreadable.
+ */
+function paotangAmounts_(lines) {
+  var out = [];
+  lines.forEach(function (l) {
+    if (findTime_(l) || findDate_(l)) return;                                         // date / time
+    if (/\bID\b|\*{2,}/i.test(l)) return;                                          // G-Wallet ID: **** 9136
+    if (/[0-9a-f]{12,}|[0-9a-f]{8}-[0-9a-f]{4}/i.test(l)) return;                    // reference
+    if (/\d\s*\/\s*\d/.test(l)) return;                                         // 60/40
+    numbersIn_(l).forEach(function (n) { if (n !== 0) out.push(n); });
+  });
+  return out;
+}
+
+/**
+ * Finds price, discount and amount paid by the slip's own sum: price - discount = paid.
+ * e.g. 35, -21, 14  ->  { full: 35, discount: 21, paid: 14 }. The bottom-most match wins.
+ * Returns null when no three amounts add up.
+ */
+function paotangSum_(amounts) {
+  for (var k = amounts.length - 1; k >= 2; k--) {
+    var paid = amounts[k];
+    if (paid <= 0) continue;
+    for (var j = k - 1; j >= 1; j--) {
+      var disc = Math.abs(amounts[j]);
+      for (var i = j - 1; i >= 0; i--) {
+        var full = amounts[i];
+        if (full > disc && full > paid && Math.abs(full - disc - paid) < 0.005) {
+          return { full: full, discount: disc, paid: paid };
+        }
+      }
+    }
+  }
+  return null;
 }
 
 var SLIP_PARSERS = {
@@ -372,6 +423,9 @@ var SLIP_PARSERS = {
   'Paotang': function (lines, text) {
     // Paotang shows: price (ค่าสินค้า/บริการ) at the top, any discount/co-pay (สิทธิ... -xx) and
     // the amount actually paid (จำนวนเงินที่ชำระ) at the bottom. We always want the amount paid.
+    // Most reliable: three amounts on the slip that add up (price - discount = paid). This works even when
+    // OCR garbles the Thai labels and "บาท" (e.g. "uin", "wun"), or splits numbers from their labels.
+    var sum = paotangSum_(paotangAmounts_(lines));
     var paid = amountAfterLabel_(lines, ['จำนวนเงินที่ชำระ', 'ยอดเงินที่ชำระ', 'ยอดชำระ', 'ชำระทั้งสิ้น']);
     var full = amountAfterLabel_(lines, ['ค่าสินค้า/บริการ', 'ค่าสินค้า', 'ราคา']);
     var discount = amountAfterLabel_(lines, ['สิทธิ', 'ส่วนลด', 'คูปอง'], { allowFee: true, signed: true });
@@ -379,6 +433,7 @@ var SLIP_PARSERS = {
       // Label unreadable? A negative amount on the slip is the discount.
       lines.forEach(function (l) { if (!discount && CURRENCY_RE_.test(l)) numbersIn_(l).forEach(function (n) { if (n < 0) discount = -n; }); });
     }
+    if (sum) { paid = sum.paid; full = sum.full; discount = sum.discount; }
     if (paid === null) paid = lastCurrencyAmount_(lines);   // the paid amount is printed last
     if (full === null && discount) {
       // price is the first amount on the slip
@@ -419,10 +474,7 @@ var SLIP_PARSERS = {
         break;
       }
     }
-    // Reference is a UUID; OCR sometimes reads 0 as O
-    var uuid = normalizeText_(text)
-      .match(/[0-9a-fo]{8}-[0-9a-fo]{4}-[0-9a-fo]{4}-[0-9a-fo]{4}-[0-9a-fo]{12}/i);
-    if (uuid) out.ref = uuid[0].toLowerCase().replace(/o/g, '0');
+    out.ref = paotangRef_(normalizeText_(text));
 
     // Co-payment schemes (e.g. ไทยช่วยไทยพลัส): keep full price and subsidy in the note
     var subsidyLine = lines.filter(function (l) { return /สิทธิ|ส่วนลด|คูปอง/.test(l); })[0];

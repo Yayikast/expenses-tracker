@@ -7,6 +7,7 @@ const QR_BBL = '004600060000010103002022520260906154344240043029085102TH91043C42
 const KSA = { bank:'Krungsri', date:'2026-09-30', time:'20:19', amount:195, payee:'LINE MAN' };
 const BBL = { bank:'Bangkok Bank', date:'2026-09-06', time:'15:43', amount:276, payee:'ShopeePay' };
 const PAO = { bank:'Paotang', date:'2026-09-29', time:'17:51', amount:96.2, payee:'2sis Acai & Klongluang', ref:'dc6230a7-9828-4e70-b148-a095d7d6c9e3' };
+const PAO2 = { bank:'Paotang', date:'2026-10-07', time:'10:22', amount:14, payee:'ซิมเพิล มีลส์', ref:'7b3e91c0d2a54f6e8a1b9c0d3e4f5a6b' };
 const cases = [
   ['krungsri tesseract + QR', fx('krungsri.tesseract.txt'), QR_KSA, {...KSA, ref:'KSA00000000951560434407ac'}],
   ['krungsri tesseract, no QR', fx('krungsri.tesseract.txt'), null, {...KSA, ref:'KSA00000000951560434'}],
@@ -23,6 +24,11 @@ const cases = [
   ['paotang unreadable Thai labels (real OCR, no date line)', fx('paotang.garbled.txt'), null, { ...PAO, date: '', time: '' }],
   ['paotang without a discount', fx('paotang.nodiscount.txt'), null, { bank: 'Paotang', date: '2026-10-03', time: '12:05', amount: 50, payee: 'ร้านป้าแดง' }],
   ['paotang 60/40 where only the full price is readable -> blank, not 189', fx('paotang.unclear.txt'), null, { bank: 'Paotang', amount: '', payee: '2sis Acai & Klongluang' }],
+  // Newer Paotang slips (Oct 2026): whole-baht amounts, reference without dashes
+  ['paotang v2: 35 - 21 = paid 14', fx('paotang.v2.drive.txt'), null, { ...PAO2 }],
+  ['paotang v2: numbers and บาท on separate lines', fx('paotang.v2.split.txt'), null, { ...PAO2 }],
+  ['paotang v2: real garbled OCR (logo unread, บาท -> uin/wun) -> still 14, not 35', fx('paotang.v2.garbled.txt'), null, { bank: 'Paotang', amount: 14, time: '10:22', ref: PAO2.ref }],
+  ['paotang v2: thousands price is not mistaken for a year', fx('paotang.v2.big.txt'), null, { bank: 'Paotang', amount: 2350, date: '2026-10-05', payee: 'ร้าน 2 พี่น้อง', ref: '0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f' }],
 ];
 let fail = 0;
 for (const [name, text, qr, exp] of cases) {
@@ -37,6 +43,14 @@ for (const f of ['paotang.drive.txt', 'paotang.columns.txt', 'paotang.decomposed
   if (!/Full price 189\.00/.test(r.note) || !/-92\.80/.test(r.note)) { fail++; console.log('FAIL note', f, r.note); }
 }
 if (P.parseSlipText(fx('paotang.nodiscount.txt'), null).note) { fail++; console.log('FAIL nodiscount note'); }
+for (const f of ['paotang.v2.drive.txt', 'paotang.v2.split.txt', 'paotang.v2.garbled.txt']) {
+  const r = P.parseSlipText(fx(f), null);
+  if (!/Full price 35\.00/.test(r.note) || !/-21\.00/.test(r.note)) { fail++; console.log('FAIL v2 note', f, r.note); }
+}
+// Other banks are never mistaken for Paotang
+for (const f of ['krungsri.tesseract.txt', 'krungsri.thai.txt', 'bangkok.drive.txt', 'bangkok.tesseract.txt', 'bangkok.thai.txt']) {
+  if (P.detectBank(fx(f), null) === 'Paotang') { fail++; console.log('FAIL detected as Paotang', f); }
+}
 // QR
 const q = P.parseSlipQr(QR_KSA);
 if (q.bankCode !== '025' || q.bank !== 'Krungsri') { fail++; console.log('FAIL qr', q); } else console.log('ok   qr parse');
