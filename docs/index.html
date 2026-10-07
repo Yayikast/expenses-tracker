@@ -24,7 +24,7 @@
   <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap"></noscript>
   <!-- Apply the Light/Dark choice from Settings before anything is drawn, so there's no flash -->
   <script>try { var t = JSON.parse(localStorage.getItem('et_theme')); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}</script>
-  <link rel="stylesheet" href="styles.css?v=9">
+  <link rel="stylesheet" href="styles.css?v=10">
   <!-- Start downloading the chart library now, in parallel; app.js uses it when it arrives -->
   <link rel="preload" as="script" href="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js">
 </head>
@@ -66,7 +66,7 @@
   <input type="file" id="slip-input" accept="image/*" multiple hidden>
 
   <!-- Chart.js and jsQR are loaded by app.js only when needed, so they don't hold up startup -->
-  <script src="config.js?v=9"></script>
-  <script src="app.js?v=9"></script>
+  <script src="config.js?v=10"></script>
+  <script src="app.js?v=10"></script>
 </body>
 </html>

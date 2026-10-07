@@ -78,14 +78,15 @@ On GitHub: repo **Settings → Pages → Build and deployment**: Source **Deploy
 
 | Screen | What it does |
 |---|---|
-| **Home** | Month picker, total spent / income / left over, change vs last month, spending by category (top 5, then **View more**, with budget bars), spending per month chart (tap a bar to jump to that month), recent items |
+| **Home** | Month picker, total spent with a bar showing how much of your income is used, income / left over (tap for savings history), change vs last month, monthly items still to pay or receive, **Spending** by category for this month or another period (tap the period: last 3 / 12 months, all time, or custom months; top 5, then **View more**, with budget notes), spending per month chart (tap a bar to jump to that month), recent items |
 | **+ → Scan slips** | Pick one or more slips. Each one is read, then shown on a review card. Check it and tap **Save & next**, or **Skip** |
 | **+ → Add manually** | For cash, income or anything without a slip |
+| **Monthly items** | Things that happen every month, e.g. Mom ฿10,000 income or AIS ฿345. Add them in Settings → Monthly items (start month, optional last month). Each month they wait on Home as **pending** (not counted) until you tap **Received** / **Paid**. Tap one to change that month's amount only, or skip a month |
 | **Split a bill** | On any expense, tap more than one category. Each one gets its own amount box, with the remaining amount shown underneath. Save unlocks once the parts add up exactly to the total. Tap a category again to remove it. |
 | **+ → Lend or borrow** | "I lent", "They paid back", "I borrowed", "I paid back" |
 | **History** | Search, filter by month / category / type, then tap an item to view the slip, edit or delete it |
 | **Friends** | One balance per friend, netted: if you borrowed ฿50 from Matt and he borrowed ฿20 from you, it shows **You owe ฿30**; equal amounts show **Settled — ฿0**. Tap a friend to see every original lend/borrow record, then **They paid back** or **I paid back** to fill in the remaining amount for you |
-| **Settings** | Appearance (System / Light / Dark, saved per device), rename or hide categories, set monthly budgets, manage accounts, links to your Sheet and slips folder, sign out (this device or all devices) |
+| **Settings** | Appearance (System / Light / Dark, saved per device), monthly items, rename or hide categories, set monthly budgets, manage accounts, links to your Sheet and slips folder, sign out (this device or all devices) |
 
 **Category guessing:** every time you save a payee with a category, the app remembers it (`PayeeRules` tab), so the next slip from the same shop is categorised automatically.
 
@@ -93,16 +94,21 @@ On GitHub: repo **Settings → Pages → Build and deployment**: Source **Deploy
 
 **Lending doesn't count as spending.** Lend, borrow and transfer (between your own accounts) are kept out of the monthly totals.
 
+**Left over and savings.** Left over = income received − expenses for the month. Pending monthly items aren't counted until you mark them. Tap Left over to see every month and your total saved. Savings are worked out, never saved as a transaction.
+
+**No double counting.** When you add a slip whose name matches a pending monthly item (e.g. "AIS Fibre" for AIS), the editor offers **Counts as monthly AIS**, so that month turns Paid instead of being counted twice. One month can only be linked to one transaction.
+
 **Lost your phone?** Settings → **Sign out all devices**, or run `signOutEverywhere` from the Apps Script editor.
 
 ## Your data (the Google Sheet)
 
 | Tab | Holds |
 |---|---|
-| `Transactions` | One row per transaction: id, date, time, type, amount, category, payee, person, note, method, account, source, slip_ref, slip_url, created_at, updated_at, splits |
+| `Transactions` | One row per transaction: id, date, time, type, amount, category, payee, person, note, method, account, source, slip_ref, slip_url, created_at, updated_at, splits, recurring (which monthly item and month it belongs to, e.g. `r_ab12cd34ef56:2026-10`) |
 | `Categories` | name, type (expense / income), emoji, color, monthly budget, order, archived |
 | `Accounts` | name, kind, usual payment method, order, archived |
 | `PayeeRules` | payee → category (`exact` ones are learned automatically, `contains` ones are starter rules you can edit) |
+| `Recurring` | Monthly items: name, type, usual amount, category, account, method, day, match, start_month, end_month, months (one-month changes, e.g. `2026-10: 9000 \| 2026-12: skip`). Created the first time you add one |
 | `Summary` | Spending per month by category, made with a formula. Look but don't edit |
 
 **Split bills** stay one row: `amount` is the total, `category` says `Split`, and `splits` lists the parts, e.g. `Food: 300 | Drink: 50 | Entertainment: 50`. The parts must add up to the amount. The app's dashboard and budgets count each part in its own category, while the Sheet's `Summary` tab shows split bills under "Split".
@@ -136,7 +142,7 @@ All in `src/parsers.gs`:
 
 ```bash
 npm test                 # parser + server + sign-in tests (no Google needed)
-npm run build-preview    # dev/out/index.html with a fake back-end, to try the screens
+npm run build-preview    # dev/out/index.html with a fake back-end, to try the screens (the QA circle switches test data)
 ```
 
 ```
@@ -148,6 +154,7 @@ src/                  Apps Script back-end (clasp pushes this folder)
   Code.gs             API entry point (doPost) and action list
   auth.gs             Google sign-in check, sessions, sign out
   api.gs              save / edit / delete, settings, duplicates, payee learning
+  recurring.gs        monthly items: save / delete, one-month amounts and skips
   slip.gs             slip upload, Drive OCR, moving slips into month folders
   parsers.gs          reads Thai slip text and QR codes
   db.gs               Sheet helpers

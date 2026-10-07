@@ -4,7 +4,7 @@
   "private": true,
   "description": "Personal expense tracker: GitHub Pages app + Google Apps Script API + Google Sheets, reads Thai payment slips",
   "scripts": {
-    "test": "node tests/parsers.test.js && node tests/server.test.js",
+    "test": "node tests/parsers.test.js && node tests/server.test.js && node tests/recurring.test.js",
     "preview": "node dev/build-preview.js",
     "push": "clasp push",
     "build-preview": "node dev/build-preview.js"

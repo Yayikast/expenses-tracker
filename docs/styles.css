@@ -126,7 +126,6 @@ svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width:
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 46px; padding: 0 18px; border-radius: 14px; font-weight: 600; background: var(--card-2); color: var(--text); }
 .btn-primary { background: var(--accent); color: var(--accent-text); }
 .btn-danger { background: var(--danger-soft); color: var(--danger); }
-.btn-ghost { background: transparent; color: var(--muted); }
 .btn-block { width: 100%; }
 .btn[disabled] { opacity: .55; pointer-events: none; }
 .btn-sm { height: 36px; padding: 0 12px; border-radius: 10px; font-size: 14px; }
@@ -149,7 +148,9 @@ svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width:
 .delta.up { color: var(--danger); background: var(--danger-soft); }
 .delta.down { color: var(--income); background: color-mix(in srgb, var(--income) 14%, transparent); }
 .hero-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 16px; }
-.hero-row div { background: var(--card-2); border-radius: 14px; padding: 10px 12px; }
+.hero-row div, .hero-row .hero-tile { background: var(--card-2); border-radius: 14px; padding: 10px 12px; }
+.hero-tile { display: block; width: 100%; text-align: left; cursor: pointer; }
+.hero-tile small { display: block; font-size: 12px; color: var(--muted); margin-top: 1px; }
 .hero-row span { display: block; font-size: 12px; color: var(--muted); }
 .hero-row b { font-size: 17px; font-weight: 600; }
 
@@ -176,6 +177,10 @@ svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width:
 .bar i { display: block; height: 100%; border-radius: 6px; }
 .budget-note { margin: 4px 0 0 42px; font-size: 12px; color: var(--muted); }
 .budget-note.over { color: var(--danger); font-weight: 500; }
+.spend-bar { height: 8px; border-radius: 8px; background: var(--card-2); margin-top: 14px; overflow: hidden; }
+.spend-bar i { display: block; height: 100%; border-radius: 8px; }
+.spend-note { display: flex; justify-content: space-between; gap: 8px; margin-top: 5px; font-size: 12px; color: var(--muted); }
+.spend-note.over { color: var(--lend); font-weight: 500; }   /* same orange as a negative Left over */
 
 .chart-box { position: relative; height: 180px; }
 
@@ -385,3 +390,35 @@ select.input { background-image: linear-gradient(45deg, transparent 50%, var(--f
 .split-rem.warn { color: var(--lend); }
 .split-rem.ok { color: var(--income); font-weight: 600; }
 .split-rem.bad { color: var(--danger); }
+
+/* ---------- Monthly recurring ---------- */
+.rec-list { display: flex; flex-direction: column; }
+.rec-row { display: flex; align-items: center; gap: 12px; padding: 10px 2px; border-top: 1px solid var(--line); cursor: pointer; }
+.rec-row:first-child { border-top: 0; }
+.rec-amt { font-weight: 600; white-space: nowrap; color: var(--muted); }   /* pending: not counted yet */
+.rec-row .tx-sub { white-space: normal; }
+.rec-btn { flex: none; background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.rec-chip { display: table; margin: 6px auto 0; padding: 4px 12px; border-radius: 999px; font-size: 13px; font-weight: 500; background: var(--card-2); color: var(--muted); }
+.rec-chip.done { background: color-mix(in srgb, var(--income) 14%, transparent); color: var(--income); }
+.rec-chip.pending { background: var(--warn-soft); color: var(--warn-text); }
+.rec-cand { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--line); font-size: 14px; }
+.rec-cand span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rec-link { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; margin-bottom: 12px; border-radius: 12px; background: var(--accent-soft); font-size: 14px; cursor: pointer; }
+.rec-link input { width: 18px; height: 18px; margin: 1px 0 0; accent-color: var(--accent); flex: none; }
+.rec-link small { display: block; color: var(--muted); font-size: 12px; }
+button.link-row { width: 100%; text-align: left; background: none; }
+
+/* ---------- Spending by category: period ---------- */
+/* period list in a sheet */
+.period-link { font-size: 14px; }
+.period-list { padding: 4px 14px; }
+.period-row { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; padding: 12px 2px; border-top: 1px solid var(--line); }
+.period-row:first-child { border-top: 0; }
+.period-row > span { flex: 1; }
+.period-row b { display: block; font-weight: 500; }
+.period-row small { display: block; font-size: 12.5px; color: var(--muted); }
+.period-row svg { width: 20px; height: 20px; fill: none; stroke: var(--accent); stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.period-row.is-on b { color: var(--accent); font-weight: 600; }
+.cat-range { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-size: 12.5px; color: var(--muted); margin-bottom: 4px; }
+.cat-range b { color: var(--text); font-weight: 600; }
+.cat-empty { padding: 14px 0 6px; text-align: center; }

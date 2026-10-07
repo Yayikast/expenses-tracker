@@ -14,6 +14,8 @@ function setup() {
   formatSmallTab_('categories', { budget: '#,##0', order: '0' }, [140, 90, 60, 90, 90, 60, 80]);
   formatSmallTab_('accounts', { order: '0' }, [140, 90, 120, 60, 80]);
   formatSmallTab_('rules', {}, [220, 120, 90, 150]);
+  formatSmallTab_('recurring', { amount: '#,##0.00', day: '0', order: '0' },
+    [120, 120, 80, 90, 110, 110, 90, 50, 120, 90, 90, 260, 50, 150, 150]);
 
   seed_('categories', DEFAULT_CATEGORIES.map(function (c, i) {
     return { name: c[0], type: c[1], emoji: c[2], color: c[3], budget: c[4], order: i + 1, archived: false };
@@ -57,7 +59,7 @@ function formatTransactions_() {
   sh.getRange(2, 1, rows, h.length).setNumberFormat('@');
   sh.getRange(2, h.indexOf('date') + 1, rows, 1).setNumberFormat('yyyy-mm-dd');
   sh.getRange(2, h.indexOf('amount') + 1, rows, 1).setNumberFormat('#,##0.00');
-  var widths = [120, 95, 60, 100, 90, 110, 200, 110, 220, 90, 110, 70, 220, 200, 150, 150, 300];
+  var widths = [120, 95, 60, 100, 90, 110, 200, 110, 220, 90, 110, 70, 220, 200, 150, 150, 300, 170];
   widths.forEach(function (w, i) { sh.setColumnWidth(i + 1, w); });
 }
 

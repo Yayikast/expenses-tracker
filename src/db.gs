@@ -25,6 +25,7 @@ function fromCell_(header, v) {
   if (v instanceof Date) {
     if (header === 'date') return formatDate_(v, 'yyyy-MM-dd');
     if (header === 'time') return formatDate_(v, 'HH:mm');
+    if (header === 'start_month' || header === 'end_month') return formatDate_(v, 'yyyy-MM');
     return formatDate_(v, 'yyyy-MM-dd HH:mm:ss');
   }
   if (header === 'amount' || header === 'budget' || header === 'order') {
@@ -32,6 +33,12 @@ function fromCell_(header, v) {
   }
   if (header === 'archived') return v === true || String(v).toUpperCase() === 'TRUE';
   if (header === 'splits') return parseSplits_(v);
+  if (header === 'months') return parseMonths_(v);
+  if (header === 'start_month' || header === 'end_month') {
+    var mo = String(v === null || v === undefined ? '' : v).trim();
+    return /^\d{4}-(0[1-9]|1[0-2])$/.test(mo) ? mo : '';   // a hand-typed "Oct" is ignored rather than breaking the app
+  }
+  if (header === 'day') return v === '' || v === null ? '' : Number(v);
   return v === null || v === undefined ? '' : String(v);
 }
 
@@ -47,6 +54,8 @@ function toCell_(header, v) {
   }
   if (header === 'archived') return v === true;
   if (header === 'splits') return formatSplits_(v);
+  if (header === 'months') return formatMonths_(v);
+  if (header === 'day') return v === '' ? '' : Number(v);
   var s = String(v);
   // Stop text like "=..." being treated as a formula
   if (/^[=+\-@]/.test(s)) s = "'" + s;
@@ -97,6 +106,29 @@ function formatSplits_(splits) {
   }).join(' | ');
 }
 
+/**
+ * Month-only changes of a recurring rule, kept readable in one cell:
+ * "2026-10: 9000 | 2026-12: skip"  <->  { '2026-10': 9000, '2026-12': 'skip' }
+ */
+function parseMonths_(v) {
+  var out = {};
+  String(v === null || v === undefined ? '' : v).split('|').forEach(function (part) {
+    var m = part.match(/(\d{4}-\d{2})\s*:\s*(skip|[\d,.]+)/i);
+    if (!m) return;
+    if (/skip/i.test(m[2])) out[m[1]] = 'skip';
+    else { var n = Number(m[2].replace(/,/g, '')); if (n > 0) out[m[1]] = Math.round(n * 100) / 100; }
+  });
+  return out;
+}
+
+function formatMonths_(months) {
+  if (!months || typeof months !== 'object') return '';
+  return Object.keys(months).sort().map(function (k) {
+    var v = months[k];
+    return k + ': ' + (v === 'skip' ? 'skip' : (Number(v) % 1 ? Number(v).toFixed(2) : String(Number(v))));
+  }).join(' | ');
+}
+
 function rowFromObject_(key, obj) {
   return TABLES[key].headers.map(function (h) { return toCell_(h, obj[h]); });
 }
@@ -107,7 +139,7 @@ function formatsFor_(key) {
     if (h === 'date') return 'yyyy-mm-dd';
     if (h === 'amount') return '#,##0.00';
     if (h === 'budget') return '#,##0';
-    if (h === 'order') return '0';
+    if (h === 'order' || h === 'day') return '0';
     if (h === 'archived') return 'General';
     return '@';
   });

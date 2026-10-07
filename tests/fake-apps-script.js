@@ -81,7 +81,7 @@ function createServer() {
   const root = path.join(__dirname, '..');
   const configPath = fs.existsSync(path.join(root, 'src', 'config.gs')) ? path.join(root, 'src', 'config.gs') : path.join(root, 'setup', 'config.example.gs');
   vm.runInContext(fs.readFileSync(configPath, 'utf8'), ctx, { filename: 'config.gs' });
-  for (const f of ['parsers.gs', 'db.gs', 'api.gs', 'slip.gs', 'setup.gs', 'auth.gs', 'Code.gs'])
+  for (const f of ['parsers.gs', 'db.gs', 'api.gs', 'recurring.gs', 'slip.gs', 'setup.gs', 'auth.gs', 'Code.gs'])
     vm.runInContext(fs.readFileSync(path.join(root, 'src', f), 'utf8'), ctx, { filename: f });
   const run = code => vm.runInContext(code, ctx);
   return {

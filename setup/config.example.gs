@@ -21,7 +21,7 @@ var TABLES = {
   transactions: {
     name: 'Transactions',
     headers: ['id', 'date', 'time', 'type', 'amount', 'category', 'payee', 'person', 'note',
-      'method', 'account', 'source', 'slip_ref', 'slip_url', 'created_at', 'updated_at', 'splits']
+      'method', 'account', 'source', 'slip_ref', 'slip_url', 'created_at', 'updated_at', 'splits', 'recurring']
   },
   categories: {
     name: 'Categories',
@@ -34,6 +34,14 @@ var TABLES = {
   rules: {
     name: 'PayeeRules',
     headers: ['pattern', 'category', 'match', 'updated_at']
+  },
+  // Monthly recurring income/expenses (the defaults). months = this-month-only amounts / skips,
+  // e.g. "2026-10: 9000 | 2026-12: skip". A received month is a normal transaction whose
+  // "recurring" column says which rule and month it belongs to, e.g. "r_ab12cd34ef56:2026-10".
+  recurring: {
+    name: 'Recurring',
+    headers: ['id', 'name', 'type', 'amount', 'category', 'account', 'method', 'day', 'match',
+      'start_month', 'end_month', 'months', 'order', 'created_at', 'updated_at']
   }
 };
 

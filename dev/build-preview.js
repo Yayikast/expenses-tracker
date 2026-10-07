@@ -9,14 +9,15 @@ const NM = process.env.NODE_MODULES || path.join(root, 'node_modules');
 
 let html = read('docs', 'index.html');
 const fixtures = { krungsri: fx('krungsri.tesseract.txt'), bangkok: fx('bangkok.drive.txt'), paotang: fx('paotang.drive.txt') };
-const configFile = fs.existsSync(path.join(root, 'src', 'config.gs')) ? 'src/config.gs' : 'setup/config.example.gs';
+// --public: never put your real IDs (src/config.gs) into the page, e.g. for a preview link
+const configFile = !process.argv.includes('--public') && fs.existsSync(path.join(root, 'src', 'config.gs')) ? 'src/config.gs' : 'setup/config.example.gs';
 const mock = [read(...configFile.split('/')), read('src', 'parsers.gs')].map(c => `<script>${c}</script>`).join('\n') +
   `<script>window.__fixtures=${JSON.stringify(fixtures)}</script><script>${read('dev', 'mock.js')}</script>`;
 
 html = html
-  .replace('<link rel="stylesheet" href="styles.css?v=9">', () => `<style>${read('docs', 'styles.css')}</style>`)
-  .replace('<script src="config.js?v=9"></script>', () => mock)
-  .replace('<script src="app.js?v=9"></script>', () => `<script>${read('docs', 'app.js')}</script>`)
+  .replace('<link rel="stylesheet" href="styles.css?v=10">', () => `<style>${read('docs', 'styles.css')}</style>`)
+  .replace('<script src="config.js?v=10"></script>', () => mock)
+  .replace('<script src="app.js?v=10"></script>', () => `<script>${read('docs', 'app.js')}</script><script>${read('dev', 'qa.js')}</script>`)
   .replace(/(src|href)="(icon[^"]*)"/g, (m, a, f) => `${a}="../../docs/${f}"`);
 if (process.argv.includes('--local-libs')) {
   // offline preview: put the two libraries in the page so app.js finds them already loaded

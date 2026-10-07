@@ -11,6 +11,7 @@ function getAppData_() {
     categories: readTable_('categories'),
     accounts: readTable_('accounts'),
     rules: readTable_('rules'),
+    recurring: readRecurring_(),
     types: TX_TYPES,
     methods: METHODS,
     links: {
@@ -43,10 +44,24 @@ function saveTransaction_(input) {
       }
     }
 
-    if (tx.splits.length) ensureHeaders_('transactions');
+    if (tx.splits.length || tx.recurring) ensureHeaders_('transactions');
     var row = tx.id ? findRowById_('transactions', tx.id) : -1;
     if (tx.id && row < 0) throw new Error('This transaction no longer exists. It may have been deleted.');
     var existing = row > 0 ? readRecordAt_('transactions', row) : null;
+
+    // Monthly recurring link: an edit that doesn't mention it keeps it; one month = one transaction
+    if (tx.recurring === undefined) tx.recurring = existing ? (existing.recurring || '') : '';
+    if (tx.recurring) {
+      var problem = recurringLinkProblem_(tx.recurring, tx.type);
+      if (problem && input.recurring === undefined) tx.recurring = '';   // kept link no longer fits (e.g. changed to expense): unlink
+      else if (problem) throw new Error(problem);
+    }
+    if (tx.recurring) {
+      var taken = findRecurringTaken_(tx.recurring, tx.id);
+      if (taken) {
+        throw codedError_('RECURRING_TAKEN', 'This month is already recorded (' + taken.date + ', ฿' + taken.amount + ').', taken);
+      }
+    }
 
     if (input.slipFileId) {
       tx.slip_url = fileSlip_(input.slipFileId, tx);
@@ -148,7 +163,7 @@ function saveSettings_(settings) {
       };
     }));
 
-    if (renames.length) renameCategories_(renames);
+    if (renames.length) { renameCategories_(renames); renameRecurringCategories_(renames); }
     return getAppData_();
   });
 }
@@ -195,13 +210,24 @@ function cleanTransaction_(input) {
     note: str(input.note, 300),
     method: str(input.method, 30),
     account: str(input.account, 60),
-    source: input.source === 'slip' ? 'slip' : 'manual',
+    source: input.source === 'slip' ? 'slip' : input.source === 'recurring' ? 'recurring' : 'manual',
     slip_ref: str(input.slip_ref, 80),
     slip_url: '',
     created_at: '',
     updated_at: '',
-    splits: splits
+    splits: splits,
+    recurring: recurringTag_(input.recurring, type)
   };
+}
+
+/** "r_ab12cd34ef56:2026-10" links a transaction to one month of a recurring rule (income/expense only). */
+function recurringTag_(v, type) {
+  if (v === undefined) return undefined;   // not mentioned: an edit keeps the existing link
+  var tag = String(v || '').trim();
+  if (!tag) return '';
+  if (!RECURRING_TAG_RE_.test(tag)) throw new Error('Recurring link is not in the right format.');
+  if (type !== 'income' && type !== 'expense') throw new Error('Only income and expenses can be monthly recurring.');
+  return tag;
 }
 
 /**

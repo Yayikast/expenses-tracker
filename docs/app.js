@@ -27,7 +27,8 @@ const isUnknownOutcome = err => err && (err.code === 'NETWORK' || err.code === '
  */
 function canRetry(action, args) {
   if (action === 'saveTransaction') return !!(args[0] && args[0].requestId);
-  return action === 'getAppData' || action === 'getSlipImage' || action === 'discardSlip';
+  if (action === 'saveRecurring') return !!(args[0] && args[0].id);   // editing is safe to repeat, adding isn't
+  return ['getAppData', 'getSlipImage', 'discardSlip', 'setRecurringMonth', 'deleteRecurring'].includes(action);
 }
 
 async function api(action, ...args) {
@@ -194,11 +195,14 @@ function loadScript(url) {
   return loadingScripts[url];
 }
 /** Charts draw as soon as Chart.js arrives; the rest of the screen doesn't wait for it. */
+let chartsWaiting = false;
 function loadCharts() {
-  if (window.Chart) return;
+  if (window.Chart || chartsWaiting) return;
+  chartsWaiting = true;
   loadScript(CHART_URL).then(() => {
-    if (S.data && S.view === 'home') { drawDonut(monthTotals(S.month)); drawBars(S.month); }
-  }).catch(() => { /* charts are optional; numbers and lists still show */ });
+    // draw whatever Home shows now (the Spending card may be on another period)
+    if (S.data && S.view === 'home') { drawDonut(catShown); drawBars(S.month); }
+  }).catch(() => { chartsWaiting = false; /* charts are optional; numbers and lists still show */ });
 }
 /** The QR reader is only needed when scanning slips. */
 const loadJsQr = () => (window.jsQR ? Promise.resolve() : loadScript(JSQR_URL));
@@ -236,6 +240,8 @@ function addMonths(key, n) {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`;
 }
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+/** "2026-10" -> "Oct 2026" */
+function monthShortYear(key) { const [y, m] = key.split('-').map(Number); return `${MONTHS[m - 1].slice(0, 3)} ${y}`; }
 function monthLabel(key, short) {
   const [y, m] = key.split('-').map(Number);
   return short ? MONTHS[m - 1].slice(0, 3) + (short === 'y' ? ' ' + String(y).slice(2) : '') : `${MONTHS[m - 1]} ${y}`;
@@ -246,7 +252,9 @@ function dayLabel(date) {
   if (date === today()) return 'Today';
   const yest = new Date(); yest.setDate(yest.getDate() - 1);
   if (dt.toDateString() === yest.toDateString()) return 'Yesterday';
-  return dt.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: y === new Date().getFullYear() ? undefined : 'numeric' });
+  // Same month names as the rest of the app ("Sep", not the phone's "Sept")
+  const wd = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][dt.getDay()];
+  return `${wd}, ${d} ${MONTHS[m - 1].slice(0, 3)}${y === new Date().getFullYear() ? '' : ' ' + y}`;
 }
 
 /* ---------- Transaction types ---------- */
@@ -394,6 +402,401 @@ function friendStatusText(p) {
   return `<span>Settled — ${money(0)}</span>`;
 }
 
+/* =====================================================================
+ * Monthly recurring (e.g. Mom ฿10,000 income, AIS ฿345 bill)
+ *
+ * A rule holds the DEFAULT. Each month it is:
+ *   pending  expected, NOT counted anywhere yet (only worked out here, never saved)
+ *   done     a normal transaction exists whose `recurring` is "<rule id>:<YYYY-MM>" (counted like any other)
+ *   skipped  nothing expected this month
+ * rule.months holds this-month-only changes: { '2026-10': 9000, '2026-12': 'skip' }.
+ * ===================================================================== */
+/** "r_x:2026-10" -> "Mom · October 2026" */
+function recLabel(tag) {
+  const [id, month] = String(tag).split(':');
+  const r = recRules().find(x => x.id === id);
+  return `${r ? r.name : 'Monthly item'} · ${month ? monthLabel(month) : ''}`;
+}
+function recRules() { return (S.data && S.data.recurring) || []; }
+const recTag = (r, month) => r.id + ':' + month;
+function recActive(r, month) { return !!r.start_month && r.start_month <= month && (!r.end_month || month <= r.end_month); }
+function recLinks() { const m = new Map(); txs().forEach(t => { if (t.recurring) m.set(t.recurring, t); }); return m; }
+function recItem(r, month, links = recLinks()) {
+  const tag = recTag(r, month);
+  const tx = links.get(tag) || null;
+  const mv = (r.months || {})[month];
+  const custom = typeof mv === 'number';
+  return {
+    rule: r, month, tag, tx,
+    status: tx ? 'done' : mv === 'skip' ? 'skipped' : 'pending',
+    amount: tx ? Number(tx.amount) : custom ? mv : Number(r.amount),
+    custom
+  };
+}
+function recItems(month) {
+  const links = recLinks();
+  return recRules().filter(r => recActive(r, month))
+    .sort((a, b) => (a.type === b.type ? 0 : a.type === 'income' ? -1 : 1) || (a.order || 0) - (b.order || 0))
+    .map(r => recItem(r, month, links));
+}
+/** The rule's usual day in that month (31 -> 30 in a 30-day month). */
+function recDueDate(r, month) {
+  const [y, m] = month.split('-').map(Number);
+  const last = new Date(y, m, 0).getDate();
+  return `${month}-${pad2(Math.min(Number(r.day) || 1, last))}`;
+}
+const recDoneWord = r => r.type === 'income' ? 'Received' : 'Paid';
+function shortDate(date) { const [, m, d] = date.split('-').map(Number); return `${d} ${MONTHS[m - 1].slice(0, 3)}`; }
+
+/** Which pending rule-month a new transaction probably is (same type and month, payee matches). */
+function recSuggestion(type, date, payee) {
+  if (!['income', 'expense'].includes(type) || !/^\d{4}-\d{2}/.test(date || '')) return null;
+  const p = norm(payee);
+  if (p.length < 2) return null;
+  const month = monthOf(date);
+  const links = recLinks();
+  for (const r of recRules()) {
+    if (r.type !== type || !recActive(r, month) || links.has(recTag(r, month))) continue;
+    const m = norm(r.match || r.name);
+    if (m && (p.includes(m) || (p.length >= 3 && m.includes(p)))) return { rule: r, month, tag: recTag(r, month) };
+  }
+  return null;
+}
+
+/** Mark a month received/paid: creates one normal transaction linked to that month. */
+async function recConfirm(item, amount, btn) {
+  const r = item.rule;
+  const acc = activeAccounts().find(a => a.name === r.account);
+  const payload = {
+    type: r.type, amount, category: r.category || 'Other', payee: r.name,
+    date: item.month === thisMonth() ? today() : recDueDate(r, item.month), time: '',
+    account: r.account || '', method: r.method || (acc && acc.default_method) || 'Transfer',
+    note: '', source: 'recurring', recurring: item.tag, requestId: 'r_' + randomString()
+  };
+  const label = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+  try {
+    const saved = await api('saveTransaction', payload);
+    upsertTx(saved);
+    toast(`${r.name}: ${recDoneWord(r).toLowerCase()} ${money(saved.amount)}`);
+    render();
+    return saved;
+  } catch (err) {
+    if (err.code === 'RECURRING_TAKEN' && err.data) { upsertTx(err.data); render(); toast('Already recorded for this month'); return err.data; }
+    toast(err.message, true);
+    if (btn) { btn.disabled = false; btn.textContent = label; }
+    return null;
+  }
+}
+
+/** Back to pending: removes a transaction made by "Received", or just unlinks a slip you added yourself. */
+async function recUndo(item) {
+  const t = item.tx;
+  if (!t) return;
+  if (t.source === 'recurring') {
+    await api('deleteTransaction', t.id);
+    S.data.transactions = S.data.transactions.filter(x => x.id !== t.id);
+    noteLocalChange();
+  } else {
+    const saved = await api('saveTransaction', { ...t, recurring: '' });
+    upsertTx(saved);
+  }
+  render();
+}
+
+async function recSetMonth(rule, month, value) {
+  S.data.recurring = await api('setRecurringMonth', rule.id, month, value);
+  noteLocalChange();
+  render();
+}
+
+/** One rule in one month: change this month's amount, mark received/paid, skip, undo. */
+function openRecItem(ruleId, month) {
+  const rule = recRules().find(r => r.id === ruleId);
+  if (!rule) return;
+  const sheet = openSheet({ title: `${rule.name} · ${monthLabel(month)}`, body: '', foot: '' });
+  const word = recDoneWord(rule);
+
+  function draw() {
+    const r = recRules().find(x => x.id === ruleId) || rule;
+    const it = recItem(r, month);
+    const cls = r.type === 'income' ? 't-income' : '';
+    let html = '', foot = '';
+    const mon = monthLabel(month, true);
+    if (it.status === 'done') {
+      const t = it.tx;
+      html = `
+        <div class="detail-amt"><div class="big num ${cls}">${money(t.amount)}</div><div class="rec-chip done">✓ ${word} ${esc(shortDate(t.date))}</div></div>
+        <div class="card">
+          <div class="kv"><span>Default</span><b>${money(r.amount)} / month</b></div>
+          ${t.account ? `<div class="kv"><span>Account</span><b>${esc(t.account)}</b></div>` : ''}
+          <div class="kv"><span>Counted in</span><b>${monthLabel(month)} ${r.type === 'income' ? 'income' : 'spending'}</b></div>
+        </div>`;
+      foot = `<button class="btn" data-ri="undo">Undo</button><button class="btn btn-primary" data-ri="open">Open transaction</button>`;
+    } else {
+      const skipped = it.status === 'skipped';
+      const cands = skipped ? [] : txs().filter(t => t.type === r.type && !t.recurring && monthOf(t.date) === month &&
+        norm(t.payee).includes(norm(r.match || r.name))).slice(0, 3);
+      html = `
+        <div class="rec-chip ${skipped ? 'skipped' : 'pending'}" style="margin:0 auto 12px">${skipped ? 'Skipped this month' : 'Pending · not counted yet'}</div>
+        ${skipped ? '' : `
+        <div class="field">
+          <label for="ri-amount">Amount for ${mon} only</label>
+          <div class="amount-field" id="ri-wrap"><span class="cur">฿</span><input id="ri-amount" inputmode="decimal" value="${esc(String(it.amount))}" autocomplete="off"></div>
+          <div class="small muted" style="text-align:center">Usually ${money(r.amount)}/month${it.custom ? ` · <button class="link-btn" data-ri="reset">Reset</button>` : ''}</div>
+        </div>
+        <button class="btn btn-block" data-ri="save-amount" hidden>Save ${mon} amount</button>`}
+        ${cands.length ? `<div class="card" style="margin-top:12px"><h3>Already added it?</h3>
+          <div class="small muted" style="margin:-6px 0 6px">Link it instead, so it isn't counted twice.</div>
+          ${cands.map(t => `<div class="rec-cand"><span>${esc(t.payee)} · ${esc(shortDate(t.date))}</span><b class="num">${money(t.amount)}</b><button class="btn btn-sm" data-ri-link="${esc(t.id)}">Link</button></div>`).join('')}</div>` : ''}`;
+      foot = skipped
+        ? `<button class="btn btn-primary" data-ri="unskip">Don't skip ${mon}</button>`
+        : `<button class="btn" data-ri="skip">Skip ${mon}</button><button class="btn btn-primary" data-ri="done">${word} ${money(it.amount)}</button>`;
+    }
+    html += `<button class="link-btn" data-ri="rule" style="display:block;margin:14px auto 0">Edit default (${money(r.amount)}/month) →</button>`;
+    sheet.setBody(html);
+    sheet.setFoot(foot);
+    sizeAmount($('#ri-amount', sheet.body));
+  }
+
+  const amountNow = () => Number(String(($('#ri-amount', sheet.body) || {}).value || '').replace(/,/g, ''));
+  sheet.body.addEventListener('input', e => {
+    if (e.target.id !== 'ri-amount') return;
+    e.target.value = e.target.value.replace(/[^\d.,]/g, '');
+    sizeAmount(e.target);
+    const r = recRules().find(x => x.id === ruleId) || rule;
+    const it = recItem(r, month);
+    const v = amountNow();
+    $('[data-ri="save-amount"]', sheet.body).hidden = !(v > 0) || v === it.amount;
+    const done = $('[data-ri="done"]', sheet.foot);
+    done.disabled = !(v > 0);
+    done.textContent = v > 0 ? `${word} ${money(v)}` : 'Enter an amount';
+  });
+  const onClick = async e => {
+    const b = e.target.closest('[data-ri], [data-ri-link]');
+    if (!b) return;
+    const r = recRules().find(x => x.id === ruleId) || rule;
+    const it = recItem(r, month);
+    const act = b.dataset.ri;
+    const busy = label => { b.disabled = true; b.textContent = label; };
+    try {
+      if (b.dataset.riLink) {
+        busy('Linking…');
+        const t = txs().find(x => x.id === b.dataset.riLink);
+        upsertTx(await api('saveTransaction', { ...t, recurring: it.tag }));
+        toast(`Linked to ${r.name} ${monthLabel(month, true)}`);
+        render(); return draw();
+      }
+      if (act === 'rule') { sheet.close(); return openRuleEditor(r); }
+      if (act === 'open') { sheet.close(); return openDetail(it.tx.id); }
+      if (act === 'undo') {
+        if (!b.dataset.sure) { b.dataset.sure = '1'; b.textContent = 'Tap again to undo'; return; }
+        busy('Undoing…'); await recUndo(it); toast('Back to pending'); return draw();
+      }
+      if (act === 'done') {
+        const v = amountNow();
+        if (!(v > 0)) return;
+        if (await recConfirm(it, v, b)) draw();
+        return;
+      }
+      if (act === 'save-amount') {
+        const v = amountNow();
+        busy('Saving…');
+        await recSetMonth(r, month, v === Number(r.amount) ? '' : v);
+        toast(`${monthLabel(month, true)} set to ${money(v)}`);
+        return draw();
+      }
+      if (act === 'reset') { busy('Saving…'); await recSetMonth(r, month, ''); return draw(); }
+      if (act === 'skip') { busy('Saving…'); await recSetMonth(r, month, 'skip'); toast(`Skipped ${monthLabel(month, true)}`); return draw(); }
+      if (act === 'unskip') { busy('Saving…'); await recSetMonth(r, month, ''); return draw(); }
+    } catch (err) {
+      toast(err.message, true);
+      draw();
+    }
+  };
+  sheet.body.addEventListener('click', onClick);
+  sheet.foot.addEventListener('click', onClick);
+  draw();
+}
+
+/** Add or edit a recurring rule (the default). */
+function openRuleEditor(rule) {
+  const isEdit = !!(rule && rule.id);
+  const accounts = activeAccounts();
+  const f = {
+    type: (rule && rule.type) || 'expense',
+    name: (rule && rule.name) || '',
+    amount: rule && rule.amount ? String(rule.amount) : '',
+    category: (rule && rule.category) || '',
+    account: rule ? (rule.account || '') : ((accounts[0] || {}).name || ''),
+    day: (rule && rule.day) || 1,
+    start_month: (rule && rule.start_month) || thisMonth(),
+    end_month: (rule && rule.end_month) || '',
+    match: (rule && rule.match) || ''
+  };
+  let confirmDelete = false;
+  const sheet = openSheet({
+    title: isEdit ? 'Edit monthly item' : 'New monthly item', body: '',
+    foot: `${isEdit ? '<button class="btn btn-danger" data-rd>Delete</button>' : ''}<button class="btn btn-primary" data-rs>Save</button>`
+  });
+  // Start month: this month or up to 2 years back (to fill in past months)
+  const startChoices = Array.from({ length: 25 }, (_, i) => addMonths(thisMonth(), -i));
+  if (!startChoices.includes(f.start_month)) startChoices.push(f.start_month);
+
+  // Last month (inclusive): from the start month up to 3 years ahead
+  function endChoices() {
+    const list = [];
+    for (let m = f.start_month; m <= addMonths(thisMonth(), 36); m = addMonths(m, 1)) list.push(m);
+    if (f.end_month && !list.includes(f.end_month)) list.push(f.end_month);
+    return list;
+  }
+
+  function draw() {
+    const cats = activeCats(f.type);
+    if (f.category && !cats.some(c => c.name === f.category)) cats.push({ ...catInfo(f.category, f.type), name: f.category });
+    sheet.setBody(`
+      <div class="segmented">
+        <button type="button" class="${f.type === 'income' ? 'is-on' : ''}" data-rt="income">Income</button>
+        <button type="button" class="${f.type === 'expense' ? 'is-on' : ''}" data-rt="expense">Expense</button>
+      </div>
+      <div class="field"><label for="r-name">Name</label>
+        <input class="input" id="r-name" value="${esc(f.name)}" placeholder="${f.type === 'income' ? 'e.g. Mom' : 'e.g. AIS'}" autocomplete="off"></div>
+      <div class="field"><label for="r-amount">Usual amount per month</label>
+        <div class="amount-field" id="r-wrap"><span class="cur">฿</span><input id="r-amount" inputmode="decimal" placeholder="0" value="${esc(f.amount)}" autocomplete="off"></div>
+        ${isEdit ? `<div class="small muted" style="text-align:center">Applies to this month (if not received yet) and future months. Months already ${f.type === 'income' ? 'received' : 'paid'} keep their amount.</div>` : ''}
+      </div>
+      <div class="field"><span class="label">Category</span>
+        <div class="cat-grid">${cats.map(c => `<button type="button" class="cat-pick ${f.category === c.name ? 'is-on' : ''}" data-rc="${esc(c.name)}"><span class="e">${esc(c.emoji || '📦')}</span>${esc(c.name)}</button>`).join('')}</div>
+      </div>
+      <div class="two">
+        <div class="field"><label for="r-account">Account</label>
+          <select class="input" id="r-account">
+            ${accounts.map(a => `<option ${f.account === a.name ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}
+            <option value="" ${!f.account ? 'selected' : ''}>None</option>
+          </select></div>
+        <div class="field"><label for="r-day">Usually on day</label>
+          <select class="input" id="r-day">${Array.from({ length: 31 }, (_, i) => `<option ${Number(f.day) === i + 1 ? 'selected' : ''}>${i + 1}</option>`).join('')}</select></div>
+      </div>
+      <div class="two">
+        <div class="field"><label for="r-start">Starts from</label>
+          <select class="input" id="r-start">${startChoices.map(m => `<option value="${m}" ${f.start_month === m ? 'selected' : ''}>${monthLabel(m)}</option>`).join('')}</select></div>
+        <div class="field"><label for="r-end">Last month</label>
+          <select class="input" id="r-end">
+            <option value="" ${!f.end_month ? 'selected' : ''}>No end</option>
+            ${endChoices().map(m => `<option value="${m}" ${f.end_month === m ? 'selected' : ''}>${monthLabel(m)}</option>`).join('')}
+          </select></div>
+      </div>
+      <div class="field"><label for="r-match">Slips that count as this <span class="label-hint">optional</span></label>
+        <input class="input" id="r-match" value="${esc(f.match)}" placeholder="Name on the slip, e.g. ${f.type === 'income' ? 'Mom' : 'AIS'}" autocomplete="off"></div>
+      ${isEdit && recActive(rule, thisMonth()) ? (() => {
+        const it = recItem(rule, thisMonth());
+        const st = it.status === 'done' ? `✓ ${recDoneWord(rule)} ${money(it.amount)}` : it.status === 'skipped' ? 'Skipped' : `Pending ${money(it.amount)}`;
+        return `<button type="button" class="link-row" data-rmonth>📅 <span>${monthLabel(thisMonth())} <span class="small muted">· ${esc(st)}</span></span><svg class="chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></button>`;
+      })() : ''}
+      <div id="r-error"></div>`);
+    sizeAmount($('#r-amount', sheet.body));
+  }
+
+  sheet.body.addEventListener('input', e => {
+    if (e.target.id === 'r-name') f.name = e.target.value;
+    if (e.target.id === 'r-amount') { e.target.value = e.target.value.replace(/[^\d.,]/g, ''); f.amount = e.target.value; sizeAmount(e.target); }
+    if (e.target.id === 'r-match') f.match = e.target.value;
+  });
+  sheet.body.addEventListener('change', e => {
+    if (e.target.id === 'r-account') f.account = e.target.value;
+    if (e.target.id === 'r-day') f.day = Number(e.target.value);
+    if (e.target.id === 'r-start') {
+      f.start_month = e.target.value;
+      if (f.end_month && f.end_month < f.start_month) f.end_month = '';
+      draw();
+    }
+    if (e.target.id === 'r-end') { f.end_month = e.target.value; draw(); }
+  });
+  sheet.body.addEventListener('click', e => {
+    const t = e.target.closest('[data-rt]');
+    if (t && t.dataset.rt !== f.type) { f.type = t.dataset.rt; f.category = ''; return draw(); }
+    if (e.target.closest('[data-rmonth]')) { sheet.close(); return openRecItem(rule.id, thisMonth()); }
+    const c = e.target.closest('[data-rc]');
+    if (c) { f.category = c.dataset.rc; $$('[data-rc]', sheet.body).forEach(b => b.classList.toggle('is-on', b === c)); return; }
+  });
+  $('[data-rs]', sheet.foot).addEventListener('click', async e => {
+    const btn = e.currentTarget;
+    const amount = Number(String(f.amount).replace(/,/g, ''));
+    const err = msg => { $('#r-error', sheet.body).innerHTML = `<div class="banner danger">${esc(msg)}</div>`; };
+    if (!f.name.trim()) return err('Give it a name, e.g. Mom or AIS.');
+    if (!(amount > 0)) return err('Enter the usual monthly amount.');
+    if (!f.category) return err('Pick a category.');
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      const acc = accounts.find(a => a.name === f.account);
+      S.data.recurring = await api('saveRecurring', {
+        id: isEdit ? rule.id : '', name: f.name.trim(), type: f.type, amount, category: f.category,
+        account: f.account, method: (acc && acc.default_method) || '', day: f.day,
+        start_month: f.start_month, end_month: f.end_month, match: f.match.trim()
+      });
+      noteLocalChange();
+      toast(isEdit ? 'Saved' : `Added ${f.name.trim()}`);
+      sheet.close();
+      render();
+    } catch (ex) {
+      err(ex.message);
+      btn.disabled = false; btn.textContent = 'Save';
+    }
+  });
+  const del = $('[data-rd]', sheet.foot);
+  if (del) del.addEventListener('click', async e => {
+    const btn = e.currentTarget;
+    if (!confirmDelete) { confirmDelete = true; btn.textContent = 'Tap again to delete'; return; }
+    btn.disabled = true; btn.textContent = 'Deleting…';
+    try {
+      S.data.recurring = await api('deleteRecurring', rule.id);
+      noteLocalChange();
+      toast(`Deleted. Months already ${f.type === 'income' ? 'received' : 'paid'} stay in your history.`);
+      sheet.close();
+      render();
+    } catch (ex) { toast(ex.message, true); btn.disabled = false; btn.textContent = 'Delete'; confirmDelete = false; }
+  });
+  draw();
+  if (!isEdit) setTimeout(() => { const n = $('#r-name', sheet.body); if (n) n.focus(); }, 280);
+}
+
+/* ---------- Savings: received income − expenses, per month (never a transaction) ---------- */
+function savingsHistory() {
+  const months = new Set(txs().filter(t => t.type === 'income' || t.type === 'expense').map(t => monthOf(t.date)).filter(m => m && m <= thisMonth()));
+  months.add(thisMonth());
+  const list = Array.from(months).sort().map(m => {
+    const t = monthTotals(m);
+    return { month: m, income: t.income, spent: t.spent, saved: Math.round((t.income - t.spent) * 100) / 100 };
+  });
+  let run = 0;
+  list.forEach(x => { run = Math.round((run + x.saved) * 100) / 100; x.total = run; });
+  return { list, total: run };
+}
+const savedMoney = v => (v < 0 ? '-' : '') + money(v);           // same minus sign as the rest of the app
+const savedClass = v => v < 0 ? 't-over' : v > 0 ? 't-income' : '';
+function savedText(v) { return `<span class="${savedClass(v)}">${savedMoney(v)}</span>`; }
+function openSavings() {
+  const h = savingsHistory();
+  const sheet = openSheet({
+    title: 'Savings',
+    body: `
+      <div class="card net-card"><span>Total saved</span><b class="num ${savedClass(h.total)}">${savedMoney(h.total)}</b></div>
+      <div class="card"><div class="tx-list">${h.list.slice().reverse().map(x => `
+        <button class="tx" data-sv="${x.month}">
+          <span class="tx-main"><span class="tx-title">${monthLabel(x.month)}</span>
+            <span class="tx-sub">In ${money(x.income)} · Out ${money(x.spent)} · Total ${savedMoney(x.total)}</span></span>
+          <span class="tx-amt num">${savedText(x.saved)}</span>
+        </button>`).join('')}</div></div>`
+  });
+  sheet.body.addEventListener('click', e => {
+    const b = e.target.closest('[data-sv]');
+    if (!b) return;
+    S.month = b.dataset.sv;
+    sheet.close();
+    go('home');
+  });
+}
+
 /* ---------- Toast ---------- */
 let toastTimer;
 function toast(msg, isError) {
@@ -435,11 +838,152 @@ function monthTotals(key) {
       else byCat.set(t.category || 'Other', (byCat.get(t.category || 'Other') || 0) + a);
     } else if (t.type === 'income') income += a;
   });
-  return { spent, income, byCat };
+  // Whole satang, so 100.30 - (50.10 + 50.20) is exactly 0, not -0.00000000000001
+  const r2 = v => Math.round(v * 100) / 100;
+  byCat.forEach((v, k) => byCat.set(k, r2(v)));
+  return { spent: r2(spent), income: r2(income), byCat };
 }
 
 const CAT_TOP = 5;
-let catsOpen = false;   // "Where it went": showing all categories?
+let catsOpen = false;   // "Spending by category": showing all categories?
+
+/* ---------- Spending by category, for a chosen period ---------- */
+// kind: 'month' (follows the month at the top) | '3' | '12' (ending at that month) | 'all' | 'custom'
+let catPeriod = { kind: 'month', from: '', to: '' };
+// A list, not an object: number-like keys ('3', '12') would otherwise jump to the front
+const PERIOD_LIST = [['month', 'This month'], ['3', 'Last 3 months'], ['12', 'Last 12 months'], ['all', 'All time'], ['custom', 'Custom']];
+const PERIODS = Object.fromEntries(PERIOD_LIST);
+let catShown = null;   // totals the donut is drawing
+function monthsBetween(from, to) { const out = []; for (let m = from; m <= to; m = addMonths(m, 1)) out.push(m); return out; }
+function firstExpenseMonth() {
+  let first = thisMonth();
+  txs().forEach(t => { if (t.type === 'expense' && t.date && monthOf(t.date) < first) first = monthOf(t.date); });
+  return first;
+}
+function catRange() {
+  const end = S.month, p = catPeriod;
+  if (p.kind === '3') return [addMonths(end, -2), end];
+  if (p.kind === '12') return [addMonths(end, -11), end];
+  if (p.kind === 'all') return [firstExpenseMonth(), thisMonth()];
+  if (p.kind === 'custom') {
+    const from = p.from || `${end.slice(0, 4)}-01`, to = p.to || end;
+    return from <= to ? [from, to] : [to, from];
+  }
+  return [end, end];
+}
+function rangeLabel(from, to) {
+  if (from === to) return monthLabel(from);
+  const [fy] = from.split('-'), [ty] = to.split('-');
+  return fy === ty ? `${monthLabel(from, true)} – ${monthShortYear(to)}` : `${monthShortYear(from)} – ${monthShortYear(to)}`;
+}
+function catCardHtml() {
+  const [from, to] = catRange();
+  const months = monthsBetween(from, to);
+  const n = months.length;
+  const tot = { spent: 0, byCat: new Map() };
+  months.forEach(m => {
+    const t = monthTotals(m);
+    tot.spent += t.spent;
+    t.byCat.forEach((v, k) => tot.byCat.set(k, (tot.byCat.get(k) || 0) + v));
+  });
+  tot.spent = Math.round(tot.spent * 100) / 100;
+  catShown = tot;
+
+  const rows = Array.from(tot.byCat.entries()).sort((a, b) => b[1] - a[1]).map(([name, amt]) => {
+    const c = catInfo(name, 'expense');
+    const pct = tot.spent ? Math.round(amt / tot.spent * 100) : 0;
+    const budget = (Number(c.budget) || 0) * n;   // monthly budget × months in the period
+    // The bar is always this category's share of the spending (same as the %).
+    // Budget progress is only in the line underneath, which turns red when over.
+    let note = '';
+    if (budget > 0) {
+      const over = amt > budget;
+      note = `<div class="budget-note ${over ? 'over' : ''}">${money(amt)} of ${money(budget)} budget${over ? ` · ${money(amt - budget)} over` : ` · ${money(budget - amt)} left`}</div>`;
+    }
+    return `<li class="cat-row">
+      <div class="cat-row-top">
+        <span class="cat-emoji" style="background:${c.color}22">${esc(c.emoji || '📦')}</span>
+        <span class="cat-name">${esc(name)}</span>
+        <span class="cat-amt num">${money(amt)}</span>
+        <span class="cat-pct num">${pct}%</span>
+      </div>
+      <div class="bar"><i style="width:${tot.spent ? amt / tot.spent * 100 : 0}%;background:${c.color}"></i></div>${note}
+    </li>`;
+  });
+  // Budgeted categories with nothing spent in the period
+  const unspent = activeCats('expense').filter(c => Number(c.budget) > 0 && !tot.byCat.has(c.name)).map(c => `
+    <li class="cat-row">
+      <div class="cat-row-top">
+        <span class="cat-emoji" style="background:${c.color}22">${esc(c.emoji)}</span>
+        <span class="cat-name">${esc(c.name)}</span><span class="cat-amt num">฿0</span><span class="cat-pct num">0%</span>
+      </div>
+      <div class="bar"><i style="width:0"></i></div>
+      <div class="budget-note">${money(0)} of ${money(Number(c.budget) * n)} budget</div>
+    </li>`);
+  // Biggest 5 first; the rest are tucked behind "View more"
+  const items = rows.concat(unspent).map((li, i) => i < CAT_TOP ? li : li.replace('<li class="cat-row">', '<li class="cat-row cat-extra">'));
+
+  // Tap the period to pick from a list (bottom sheet); the average shows for longer periods
+  const head = `<div class="card-head"><h3>Spending</h3><button class="link-btn period-link" data-act="period-sheet" aria-label="Change period">${catPeriod.kind === 'month' ? monthLabel(from) : rangeLabel(from, to)} ›</button></div>
+      ${n > 1 && tot.spent > 0 ? `<div class="cat-range"><span>${catPeriod.kind === '3' || catPeriod.kind === '12' ? PERIODS[catPeriod.kind] : n + ' months'}</span><span>avg <b class="num">${money(Math.round(tot.spent / n))}</b>/month</span></div>` : ''}`;
+  return `
+    ${head}
+    ${tot.spent > 0 ? `
+    <div class="donut-wrap">
+      <canvas id="donut"></canvas>
+      <div class="donut-center"><div><b class="num">${money(tot.spent)}</b><span>${tot.byCat.size} ${tot.byCat.size === 1 ? 'category' : 'categories'}</span></div></div>
+    </div>` : `<div class="small muted cat-empty">No spending in ${n > 1 ? 'this period' : monthLabel(from)}.</div>`}
+    <ul class="cat-list ${catsOpen ? 'is-open' : ''}">${items.join('')}</ul>
+    ${items.length > CAT_TOP ? `<button class="more-btn" data-act="cats-more">${catsOpen ? 'Show less' : `View more (${items.length - CAT_TOP})`}</button>` : ''}`;
+}
+/** Pick the period for the Spending card from a list; Custom shows From/To months. */
+function openPeriodSheet() {
+  const sheet = openSheet({ title: 'Show spending for', body: '' });
+  function draw() {
+    const saved = catPeriod;
+    const row = k => {
+      catPeriod = { ...saved, kind: k };
+      const [f, t] = catRange();
+      catPeriod = saved;
+      const sub = k === 'month' ? monthLabel(f) : k === 'custom' ? 'Pick the months' : rangeLabel(f, t);
+      return `<button class="period-row ${saved.kind === k ? 'is-on' : ''}" data-psel="${k}"><span><b>${PERIODS[k]}</b><small>${sub}</small></span>${saved.kind === k ? '<svg viewBox="0 0 24 24"><path d="m5 12 5 5 9-10"/></svg>' : ''}</button>`;
+    };
+    const [from, to] = catRange();
+    const choices = monthsBetween(addMonths(thisMonth(), -24) < firstExpenseMonth() ? addMonths(thisMonth(), -24) : firstExpenseMonth(), thisMonth()).reverse();
+    sheet.setBody(`<div class="card period-list">${PERIOD_LIST.map(p => p[0]).map(row).join('')}</div>
+      ${saved.kind === 'custom' ? `<div class="two">
+        <div class="field"><label for="ps-from">From</label><select class="input" id="ps-from">${choices.map(m => `<option value="${m}" ${m === from ? 'selected' : ''}>${monthLabel(m)}</option>`).join('')}</select></div>
+        <div class="field"><label for="ps-to">To</label><select class="input" id="ps-to">${choices.map(m => `<option value="${m}" ${m === to ? 'selected' : ''}>${monthLabel(m)}</option>`).join('')}</select></div>
+      </div>` : ''}`);
+    sheet.setFoot(saved.kind === 'custom' ? `<button class="btn btn-primary" data-pdone>Show ${rangeLabel(from, to)}</button>` : '');
+  }
+  sheet.body.addEventListener('click', e => {
+    const b = e.target.closest('[data-psel]');
+    if (!b) return;
+    catPeriod = { ...catPeriod, kind: b.dataset.psel };
+    catsOpen = false;
+    refreshCatCard();
+    if (b.dataset.psel === 'custom') draw(); else sheet.close();
+  });
+  sheet.body.addEventListener('change', e => {
+    if (e.target.id !== 'ps-from' && e.target.id !== 'ps-to') return;
+    let [from, to] = catRange();
+    if (e.target.id === 'ps-from') { from = e.target.value; if (from > to) to = from; } else { to = e.target.value; if (to < from) from = to; }
+    catPeriod = { kind: 'custom', from, to };
+    refreshCatCard();
+    draw();
+  });
+  sheet.foot.addEventListener('click', e => { if (e.target.closest('[data-pdone]')) sheet.close(); });
+  draw();
+}
+
+/** Redraw only the category card (keeps your place on the page). */
+function refreshCatCard() {
+  const card = $('#cat-card');
+  if (!card) return;
+  card.innerHTML = catCardHtml();
+  drawDonut(catShown);
+}
 function renderHome() {
   const el = $('#view-home');
   const key = S.month;
@@ -456,42 +1000,6 @@ function renderHome() {
     delta = `<span class="delta ${cls}">${pct > 0 ? '▲' : pct < 0 ? '▼' : '='} ${Math.abs(pct)}% vs ${monthLabel(addMonths(key, -1), true)}</span>`;
   }
 
-  const cats = activeCats('expense');
-  const catRows = Array.from(cur.byCat.entries()).sort((a, b) => b[1] - a[1]).map(([name, amt]) => {
-    const c = catInfo(name, 'expense');
-    const pct = cur.spent ? Math.round(amt / cur.spent * 100) : 0;
-    const budget = Number(c.budget) || 0;
-    let barW = pct, barColor = c.color, note = '';
-    if (budget > 0) {
-      barW = Math.min(100, amt / budget * 100);
-      const over = amt > budget;
-      if (over) barColor = 'var(--danger)';
-      note = `<div class="budget-note ${over ? 'over' : ''}">${money(amt)} of ${money(budget)} budget${over ? ` · ${money(amt - budget)} over` : ` · ${money(budget - amt)} left`}</div>`;
-    }
-    return `<li class="cat-row">
-      <div class="cat-row-top">
-        <span class="cat-emoji" style="background:${c.color}22">${esc(c.emoji || '📦')}</span>
-        <span class="cat-name">${esc(name)}</span>
-        <span class="cat-amt num">${money(amt)}</span>
-        <span class="cat-pct num">${pct}%</span>
-      </div>
-      <div class="bar"><i style="width:${barW}%;background:${barColor}"></i></div>${note}
-    </li>`;
-  });
-
-  // Budgeted categories with no spending yet this month
-  const unspentBudgets = cats.filter(c => Number(c.budget) > 0 && !cur.byCat.has(c.name)).map(c => `
-    <li class="cat-row">
-      <div class="cat-row-top">
-        <span class="cat-emoji" style="background:${c.color}22">${esc(c.emoji)}</span>
-        <span class="cat-name">${esc(c.name)}</span><span class="cat-amt num">฿0</span><span class="cat-pct num">0%</span>
-      </div>
-      <div class="bar"><i style="width:0"></i></div>
-      <div class="budget-note">${money(0)} of ${money(c.budget)} budget</div>
-    </li>`);
-  // Biggest 5 first; the rest are tucked behind "View more"
-  const catItems = catRows.concat(unspentBudgets).map((li, i) => i < CAT_TOP ? li : li.replace('<li class="cat-row">', '<li class="cat-row cat-extra">'));
-
   const friendsCard = (fb.owesYou > 0 || fb.youOwe > 0) ? `
     <button class="card friends-mini" data-go="friends">
       <span class="fm-ico">🤝</span>
@@ -505,6 +1013,41 @@ function renderHome() {
 
   const empty = !monthTx.length;
 
+  // Monthly recurring for this month: pending ones are shown but not counted
+  const items = recItems(key).filter(it => it.status === 'pending');   // only what's still to receive/pay
+  const recRow = it => {
+    const r = it.rule, c = catInfo(r.category, r.type);
+    const sub = `${key < thisMonth() ? 'Was due' : 'Due'} ${shortDate(recDueDate(r, key))}`;
+    return `<div class="rec-row" data-rec="${esc(r.id)}">
+      <span class="tx-ico" style="background:${c.color || '#868E96'}22">${esc(c.emoji || '🔁')}</span>
+      <span class="tx-main"><span class="tx-title">${esc(r.name)}</span><span class="tx-sub">${esc(sub)}${it.custom ? `<br>Usually ${money(r.amount)}` : ''}</span></span>
+      <span class="rec-amt num">${r.type === 'income' ? '+' : '-'}${money(it.amount)}</span>
+      <button class="btn btn-sm rec-btn" data-rec-done="${esc(r.id)}">${recDoneWord(r)}</button>
+    </div>`;
+  };
+  const recCard = items.length ? `
+    <div class="card">
+      <div class="card-head"><h3>Monthly</h3><button class="link-btn" data-act="add-rule">+ Add</button></div>
+      <div class="rec-list">${items.map(recRow).join('')}</div>
+    </div>` : '';
+
+  const sv = savingsHistory();
+  const hasMoney = txs().some(t => t.type === 'income' || t.type === 'expense');
+
+  // How much of this month's income is spent (same numbers as Left over: received income only)
+  let spendBar = '';
+  if (cur.income > 0 || cur.spent > 0) {
+    const used = cur.income > 0 ? cur.spent / cur.income * 100 : 100;
+    const over = cur.spent > cur.income;   // same moment Left over turns orange
+    const color = over ? 'var(--lend)' : 'var(--accent)';
+    const note = cur.income <= 0 ? (key === thisMonth() ? 'No income received yet this month' : `No income received in ${monthLabel(key, true)}`)
+      : used > 100 ? `${money(cur.spent - cur.income)} more than your income`
+      : `${money(cur.spent)} of ${money(cur.income)} income`;
+    spendBar = `
+      <div class="spend-bar" role="img" aria-label="${Math.round(used)}% of income spent"><i style="width:${Math.min(100, used)}%;background:${color}"></i></div>
+      <div class="spend-note ${over ? 'over' : ''}"><span>${note}</span>${cur.income > 0 ? `<span class="num">${Math.round(used)}%</span>` : ''}</div>`;
+  }
+
   el.innerHTML = `
     <div class="month-switch">
       <button class="icon-btn" data-month="-1" aria-label="Previous month"><svg viewBox="0 0 24 24"><path d="m15 6-6 6 6 6"/></svg></button>
@@ -516,12 +1059,15 @@ function renderHome() {
       <div class="label">Spent in ${monthLabel(key, true)}</div>
       <div class="big num">${money(cur.spent)}</div>
       ${delta}
+      ${spendBar}
       <div class="hero-row">
         <div><span>Income</span><b class="num t-income">${money(cur.income)}</b></div>
-        <div><span>${cur.income - cur.spent >= 0 ? 'Left over' : 'Overspent'}</span><b class="num ${cur.income - cur.spent < 0 ? 't-over' : ''}">${money(cur.income - cur.spent)}</b></div>
+        <button class="hero-tile" data-act="savings"><span>Left over</span><b class="num ${savedClass(cur.income - cur.spent)}">${savedMoney(cur.income - cur.spent)}</b>${hasMoney ? `<small>Total ${savedMoney(sv.total)} ›</small>` : ''}</button>
       </div>
+
     </div>
 
+    ${recCard}
     ${friendsCard}
 
     ${empty ? `
@@ -534,17 +1080,7 @@ function renderHome() {
         </div>
       </div>` : ''}
 
-    ${cur.spent > 0 || unspentBudgets.length ? `
-    <div class="card">
-      <h3>Where it went</h3>
-      ${cur.spent > 0 ? `
-      <div class="donut-wrap">
-        <canvas id="donut"></canvas>
-        <div class="donut-center"><div><b class="num">${money(cur.spent)}</b><span>${cur.byCat.size} ${cur.byCat.size === 1 ? 'category' : 'categories'}</span></div></div>
-      </div>` : ''}
-      <ul class="cat-list ${catsOpen ? 'is-open' : ''}">${catItems.join('')}</ul>
-      ${catItems.length > CAT_TOP ? `<button class="more-btn" data-act="cats-more">${catsOpen ? 'Show less' : `View more (${catItems.length - CAT_TOP})`}</button>` : ''}
-    </div>` : ''}
+    ${txs().some(t => t.type === 'expense') || activeCats('expense').some(c => Number(c.budget) > 0) ? `<div class="card" id="cat-card">${catCardHtml()}</div>` : ''}
 
     <div class="card">
       <div class="card-head"><h3>Spending per month</h3><span class="small muted">tap a bar</span></div>
@@ -558,7 +1094,7 @@ function renderHome() {
     </div>` : ''}
   `;
 
-  drawDonut(cur);
+  drawDonut(catShown);
   drawBars(key);
 }
 
@@ -634,7 +1170,7 @@ function txRow(t) {
     <span class="tx-ico" style="background:${ic.color}22">${esc(ic.emoji)}</span>
     <span class="tx-main">
       <span class="tx-title">${esc(txTitle(t))}</span>
-      <span class="tx-sub">${esc(sub)}${t.slip_url ? ' · 📎' : ''}${t.note ? ' · ' + esc(t.note) : ''}</span>
+      <span class="tx-sub">${t.recurring ? '🔁 ' : ''}${esc(sub)}${t.slip_url ? ' · 📎' : ''}${t.note ? ' · ' + esc(t.note) : ''}</span>
     </span>
     <span class="tx-amt num t-${t.type}">${money(t.amount, { sign: TYPE[t.type].sign })}</span>
   </button>`;
@@ -830,6 +1366,11 @@ function renderSettings() {
       </div>
     </div>
     <div class="card">
+      <div class="set-section-title">Monthly items</div>
+      ${recRules().map(r => `<button class="link-row" data-rule="${esc(r.id)}">${esc(catInfo(r.category, r.type).emoji || '🔁')} <span>${esc(r.name)} <span class="small muted">· ${r.type === 'income' ? 'Income' : 'Expense'} · ${money(r.amount)}/month${r.end_month ? (r.end_month < thisMonth() ? ' · ended ' : ' · until ') + monthShortYear(r.end_month) : ''}</span></span><svg class="chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></button>`).join('')}
+      <button class="btn btn-sm" data-act="add-rule" style="margin-top:6px">+ Add monthly item</button>
+    </div>
+    <div class="card">
       <div class="set-section-title">Expense categories · monthly budget</div>
       ${d.categories.map((c, i) => c.type === 'expense' ? catRow(c, i) : '').join('')}
       <button class="btn btn-sm" data-add-cat="expense">+ Add category</button>
@@ -957,6 +1498,9 @@ function openEditor(initial = {}, opts = {}) {
       account: defaultAcc,
       method: initial.method || ((accounts.find(a => a.name === defaultAcc) || {}).default_method) || 'PromptPay',
       slip_ref: initial.slip_ref || '',
+      // Monthly recurring link: kept on edit; for new ones the app suggests one (switch, on by default)
+      recurring: initial.recurring || '',
+      recOff: false,
       // A category the app filled in for you (slip/shop guess). Tapping another one replaces it instead of splitting.
       catGuessed: false
     };
@@ -1051,6 +1595,7 @@ function openEditor(initial = {}, opts = {}) {
           <label for="f-payee">${payeeLabel}</label>
           <input class="input" id="f-payee" list="dl-payees" value="${esc(f.payee)}" placeholder="${grp === 'income' ? 'e.g. Mom' : 'e.g. LINE MAN, 7-Eleven'}" autocomplete="off">
         </div>
+        <div id="ed-rec">${recSection()}</div>
         <div class="two">
           <div class="field"><label for="f-date">Date</label><input class="input" type="date" id="f-date" value="${esc(f.date)}"></div>
           <div class="field"><label for="f-time">Time</label><input class="input" type="time" id="f-time" value="${esc(f.time)}"></div>
@@ -1073,6 +1618,26 @@ function openEditor(initial = {}, opts = {}) {
         <datalist id="dl-people">${ppl.map(p => `<option value="${esc(p)}">`).join('')}</datalist>
         <datalist id="dl-payees">${payees().map(p => `<option value="${esc(p)}">`).join('')}</datalist>`;
     }
+
+    /* ----- Monthly recurring: "Counts as monthly AIS (October)" ----- */
+    function recTarget() {
+      if (!['income', 'expense'].includes(f.type)) return null;
+      if (f.recurring) {
+        // Kept while it's still the same kind (switching Mom's income to Expense unlinks it)
+        const rule = recRules().find(r => r.id === f.recurring.split(':')[0]);
+        return !rule || rule.type === f.type ? { tag: f.recurring, label: recLabel(f.recurring), existing: true } : null;
+      }
+      if (isEdit) return null;   // suggestions are for new transactions; link old ones from the month popup
+      const sug = recSuggestion(f.type, f.date, f.payee);
+      return sug ? { tag: sug.tag, label: `${sug.rule.name} · ${monthLabel(sug.month)}` } : null;
+    }
+    function recSection() {
+      const t = recTarget();
+      if (!t) return '';
+      return `<label class="rec-link"><input type="checkbox" id="f-rec" ${f.recOff ? '' : 'checked'}>
+        <span>🔁 Counts as monthly <b>${esc(t.label)}</b><small>${t.existing ? 'Untick to unlink it from that month.' : 'So that month shows as done instead of pending.'}</small></span></label>`;
+    }
+    function updateRec() { const box = $('#ed-rec', sheet.body); if (box) box.innerHTML = recSection(); }
 
     /* ----- Split bill: amounts per category, only when 2+ categories are picked ----- */
     const isSplit = () => groupOf(f.type) === 'expense' && f.cats.length >= 2;
@@ -1219,6 +1784,8 @@ function openEditor(initial = {}, opts = {}) {
         }
       }
       if (id === 'f-person') { f.person = e.target.value; e.target.classList.remove('is-invalid'); }
+      if (id === 'f-payee' || id === 'f-date') { if (id === 'f-date') f.date = e.target.value; if (!f.recurring) updateRec(); }
+      if (id === 'f-rec') f.recOff = !e.target.checked;
       if (id === 'f-note') f.note = e.target.value;
       if (id === 'f-date') f.date = e.target.value;
       if (id === 'f-time') f.time = e.target.value;
@@ -1230,6 +1797,7 @@ function openEditor(initial = {}, opts = {}) {
         if (acc && acc.default_method) { f.method = acc.default_method; $('#f-method', sheet.body).value = f.method; }
       }
       if (e.target.id === 'f-method') f.method = e.target.value;
+      if (e.target.id === 'f-rec') f.recOff = !e.target.checked;
     });
     sheet.body.addEventListener('click', e => {
       const grp = e.target.closest('[data-grp]');
@@ -1304,7 +1872,8 @@ function openEditor(initial = {}, opts = {}) {
           id: f.id, type: f.type, amount, category: splits.length ? 'Split' : (f.cats[0] || ''), splits, payee: f.payee.trim(), person: f.person.trim(),
           note: f.note.trim(), date: f.date, time: f.time, account: f.account, method: f.method,
           source: slip ? 'slip' : (initial.source || 'manual'), slip_ref: f.slip_ref,
-          slipFileId: slip ? slip.fileId : '', requestId, allowDuplicate
+          slipFileId: slip ? slip.fileId : '', requestId, allowDuplicate,
+          recurring: (() => { const t = recTarget(); return t && !f.recOff ? t.tag : ''; })()
         };
         const saved = await api('saveTransaction', payload);
         // Confirmed by the server: show it straight away
@@ -1321,7 +1890,13 @@ function openEditor(initial = {}, opts = {}) {
         render();
       } catch (err) {
         saving = false;
-        if (err.code === 'DUPLICATE') {
+        if (err.code === 'RECURRING_TAKEN') {
+          // That month is already recorded by another transaction: save this one without the link?
+          if (err.data && err.data.id) { upsertTx(err.data); render(); }
+          f.recOff = true; updateRec();
+          renderFoot();
+          fail(`<span><b>That month is already recorded</b> (${money(err.data && err.data.amount)} on ${esc(err.data && err.data.date || '')}). The link is now off. Tap <b>Save</b> to save this as a separate transaction.</span>`);
+        } else if (err.code === 'DUPLICATE') {
           // The server found this slip already saved. Show that saved transaction in the app too.
           dupState = { match: 'ref', tx: err.data || {} };
           allowDuplicate = false;
@@ -1393,7 +1968,8 @@ function openDetail(id) {
     t.method ? ['Method', t.method] : null,
     t.note ? ['Note', t.note] : null,
     t.slip_ref ? ['Slip ref', t.slip_ref] : null,
-    ['Added', `${t.source === 'slip' ? 'From slip' : 'Manually'}${t.created_at ? ' · ' + t.created_at.slice(0, 16) : ''}`]
+    t.recurring ? ['Monthly', recLabel(t.recurring)] : null,
+    ['Added', `${t.source === 'slip' ? 'From slip' : t.source === 'recurring' ? 'Marked ' + (t.type === 'income' ? 'received' : 'paid') : 'Manually'}${t.created_at ? ' · ' + t.created_at.slice(0, 16) : ''}`]
   ].filter(Boolean);
 
   let confirmDelete = false;
@@ -1570,6 +2146,16 @@ function wireEvents() {
     if (g) return go(g.dataset.go);
     const person = e.target.closest('[data-person]');
     if (person) return openPerson(person.dataset.person);
+    const rd = e.target.closest('[data-rec-done]');
+    if (rd) {
+      const r = recRules().find(x => x.id === rd.dataset.recDone);
+      if (r) { const it = recItem(r, S.month); recConfirm(it, it.amount, rd); }
+      return;
+    }
+    const rec = e.target.closest('[data-rec]');
+    if (rec) return openRecItem(rec.dataset.rec, S.month);
+    const rule = e.target.closest('[data-rule]');
+    if (rule) return openRuleEditor(recRules().find(x => x.id === rule.dataset.rule));
 
     const a = e.target.closest('[data-act]');
     if (a) {
@@ -1577,6 +2163,9 @@ function wireEvents() {
       if (act === 'scan') return pickSlips();
       if (act === 'manual') return openEditor({ type: 'expense' });
       if (act === 'friend-new') return openEditor({ type: 'lend' });
+      if (act === 'add-rule') return openRuleEditor(null);
+      if (act === 'savings') return openSavings();
+      if (act === 'period-sheet') return openPeriodSheet();
       if (act === 'see-month') { S.hist = { q: '', type: 'all', month: S.month, cat: '' }; return go('history'); }
       if (act === 'more') { histLimit += 150; return renderHistory(); }
       if (act === 'cats-more') {
